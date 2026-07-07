@@ -1,6 +1,8 @@
 #include "tensor.hpp"
 #include <stdexcept>
 #include <iostream>
+#include <cmath>
+#include <algorithm>
 
 Tensor::Tensor(int dx,int dy,int dz):dx(dx),dy(dy),dz(dz){
     valores.resize(dx * dy * dz, 0.0f);
@@ -69,3 +71,32 @@ Tensor Tensor::devidir_escalar(float e){
         }
         return tensor3;
     }
+
+Tensor Tensor::multiplicar_escalar(float e){
+    Tensor tensor3(dx, dy, dz);
+    for (size_t i = 0; i < valores.size(); i++) {
+        tensor3.valores[i] = valores[i] * e;
+    }
+    return tensor3;
+}
+
+Tensor Tensor::multiplicar_elemento(Tensor tensor2){
+    if (dx != tensor2.dx || dy != tensor2.dy || dz != tensor2.dz) {
+        throw std::invalid_argument("Las dimensiones no coinciden para la multiplicación elemento a elemento.");
+    }
+    
+    Tensor tensor3(dx, dy, dz);
+    for (size_t i = 0; i < valores.size(); i++) {
+        tensor3.valores[i] = valores[i] * tensor2.valores[i];
+    }
+    return tensor3;
+}
+
+
+Tensor Tensor::aplicar_funcion(std::function<float(float)> func){
+    Tensor result(dx, dy, dz);
+    for (size_t i = 0; i < valores.size(); i++) {
+        result.valores[i] = func(valores[i]);
+    }
+    return result;
+}
