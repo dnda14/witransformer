@@ -36,8 +36,7 @@ struct LayerNorm : Module {
     Tensor gamma, beta;
     int dim;
     explicit LayerNorm(int dim_) : dim(dim_) {
-        gamma = make_tensor(1, dim, true);
-        for (auto& v : gamma->data) v = 1.0f; // gamma inicia en 1
+        gamma = from_vector(1, dim, std::vector<float>(dim, 1.0f), true);
         beta = zeros(1, dim, true);
     }
     Tensor forward(const Tensor& x) { return layer_norm(x, gamma, beta); }

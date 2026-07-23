@@ -12,8 +12,16 @@ models/
 # Archivos compilados y resultados
 vit_train
 vit_eval
+vit_train_cuda
+vit_eval_cuda
+test_grads_*
 *.bin
 *.csv
 
 # Archivos temporales de Windows/WSL
 *:Zone.Identifier
+
+# Instaladores y paquetes
+*.deb
+
+test_grads.cpp

@@ -42,6 +42,9 @@ int main(int argc, char** argv) {
     int correct = 0;
     for (size_t i = 0; i < test.size(); ++i) {
         Tensor logits = model.forward(test.images[i]);
+#ifdef USE_CUDA
+        logits->to_host();
+#endif
         int pred = static_cast<int>(std::max_element(logits->data.begin(), logits->data.end()) - logits->data.begin());
         int truth = test.labels[i];
         confusion[truth][pred]++;

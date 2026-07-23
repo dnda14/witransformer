@@ -44,6 +44,9 @@ inline Tensor patchify(const std::vector<float>& image, const ViTConfig& cfg) {
             ++patch_idx;
         }
     }
+#ifdef USE_CUDA
+    out->to_device();
+#endif
     return out;
 }
 
@@ -84,19 +87,31 @@ struct VisionTransformer : Module {
     static Tensor concat_rows_helper(const Tensor& cls, const Tensor& rest) {
         int d = cls->cols;
         auto out = make_tensor(rest->rows + 1, d, cls->requires_grad || rest->requires_grad);
+#ifdef USE_CUDA
+        cuda::concat_rows_copy(cls->d_data, out->d_data, 1, d, 0);
+        cuda::concat_rows_copy(rest->d_data, out->d_data, rest->rows, d, 1);
+#else
         for (int j = 0; j < d; ++j) out->at(0, j) = cls->at(0, j);
         for (int i = 0; i < rest->rows; ++i)
             for (int j = 0; j < d; ++j)
                 out->at(i + 1, j) = rest->at(i, j);
+#endif
         out->parents = {cls, rest};
         TensorImpl* out_raw = out.get();
         out->backward_fn = [cls, rest, out_raw, d]() {
+#ifdef USE_CUDA
+            if (cls->requires_grad)
+                cuda::concat_rows_bwd_part(out_raw->d_grad, cls->d_grad, 1, d, 0);
+            if (rest->requires_grad)
+                cuda::concat_rows_bwd_part(out_raw->d_grad, rest->d_grad, rest->rows, d, 1);
+#else
             if (cls->requires_grad)
                 for (int j = 0; j < d; ++j) cls->g(0, j) += out_raw->g(0, j);
             if (rest->requires_grad)
                 for (int i = 0; i < rest->rows; ++i)
                     for (int j = 0; j < d; ++j)
                         rest->g(i, j) += out_raw->g(i + 1, j);
+#endif
         };
         return out;
     }
@@ -126,6 +141,9 @@ struct VisionTransformer : Module {
         uint32_t n = static_cast<uint32_t>(params.size());
         f.write(reinterpret_cast<char*>(&n), sizeof(n));
         for (auto& t : params) {
+#ifdef USE_CUDA
+            t->to_host();
+#endif
             f.write(reinterpret_cast<char*>(&t->rows), sizeof(t->rows));
             f.write(reinterpret_cast<char*>(&t->cols), sizeof(t->cols));
             f.write(reinterpret_cast<const char*>(t->data.data()), sizeof(float) * t->data.size());
@@ -156,6 +174,9 @@ struct VisionTransformer : Module {
             f.read(reinterpret_cast<char*>(&c), sizeof(c));
             if (r != t->rows || c != t->cols) throw std::runtime_error("Forma de tensor no coincide al cargar pesos");
             f.read(reinterpret_cast<char*>(t->data.data()), sizeof(float) * t->data.size());
+#ifdef USE_CUDA
+            t->to_device();
+#endif
         }
     }
 };

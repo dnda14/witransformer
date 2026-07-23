@@ -13,6 +13,11 @@
 // Todo esto reemplaza a un framework como libtorch: aquí NO hay autograd
 // mágico, cada operación (matmul, softmax, layernorm, gelu, etc.) implementa
 // su propia derivada a mano en este archivo.
+//
+// Cuando USE_CUDA está definido, cada tensor puede almacenar datos tanto en
+// CPU (std::vector) como en GPU (punteros device). Las funciones to_device()
+// y to_host() transfieren datos entre ambos. Las operaciones en ops.hpp
+// eligen automáticamente el path CPU o GPU.
 
 #pragma once
 
@@ -24,6 +29,10 @@
 #include <stdexcept>
 #include <string>
 #include <algorithm>
+
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
+#endif
 
 namespace vit {
 
@@ -41,43 +50,113 @@ struct TensorImpl : std::enable_shared_from_this<TensorImpl> {
     std::vector<Tensor> parents;
     std::function<void()> backward_fn; // usa 'this->grad' y escribe en parents[i]->grad
 
+#ifdef USE_CUDA
+    float* d_data = nullptr;   // puntero a VRAM (device memory)
+    float* d_grad = nullptr;   // gradientes en VRAM
+    bool on_device = false;    // true si los datos están en GPU
+
+    // Copia data y grad de CPU a GPU. Si los buffers device no existen, los
+    // aloja con cudaMalloc.
+    void to_device() {
+        size_t bytes = data.size() * sizeof(float);
+        if (!d_data) cudaMalloc(&d_data, bytes);
+        if (!d_grad) cudaMalloc(&d_grad, bytes);
+        cudaMemcpy(d_data, data.data(), bytes, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_grad, grad.data(), bytes, cudaMemcpyHostToDevice);
+        on_device = true;
+    }
+
+    // Copia data y grad de GPU a CPU.
+    void to_host() {
+        if (!d_data) return;
+        size_t bytes = data.size() * sizeof(float);
+        cudaMemcpy(data.data(), d_data, bytes, cudaMemcpyDeviceToHost);
+        cudaMemcpy(grad.data(), d_grad, bytes, cudaMemcpyDeviceToHost);
+    }
+
+    // Aloja buffers en GPU sin copiar datos de CPU (para tensores intermedios
+    // que se van a escribir directamente desde un kernel).
+    void alloc_device() {
+        size_t bytes = data.size() * sizeof(float);
+        if (!d_data) cudaMalloc(&d_data, bytes);
+        if (!d_grad) cudaMalloc(&d_grad, bytes);
+        cudaMemset(d_data, 0, bytes);
+        cudaMemset(d_grad, 0, bytes);
+        on_device = true;
+    }
+
+    // Pone a cero los gradientes en GPU.
+    void zero_grad_device() {
+        if (d_grad) cudaMemset(d_grad, 0, data.size() * sizeof(float));
+    }
+
+    void free_device() {
+        if (d_data) { cudaFree(d_data); d_data = nullptr; }
+        if (d_grad) { cudaFree(d_grad); d_grad = nullptr; }
+        on_device = false;
+    }
+#endif
+
     TensorImpl(int r, int c, bool rg = false)
         : rows(r), cols(c), data(static_cast<size_t>(r) * c, 0.0f),
           grad(static_cast<size_t>(r) * c, 0.0f), requires_grad(rg) {}
+
+#ifdef USE_CUDA
+    ~TensorImpl() { free_device(); }
+#endif
 
     inline float& at(int r, int c) { return data[static_cast<size_t>(r) * cols + c]; }
     inline float at(int r, int c) const { return data[static_cast<size_t>(r) * cols + c]; }
     inline float& g(int r, int c) { return grad[static_cast<size_t>(r) * cols + c]; }
 
-    void zero_grad() { std::fill(grad.begin(), grad.end(), 0.0f); }
+    void zero_grad() {
+        std::fill(grad.begin(), grad.end(), 0.0f);
+#ifdef USE_CUDA
+        zero_grad_device();
+#endif
+    }
 };
 
 // ---------- Construcción básica ----------
 
 inline Tensor make_tensor(int rows, int cols, bool requires_grad = false) {
-    return std::make_shared<TensorImpl>(rows, cols, requires_grad);
+    auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
+#ifdef USE_CUDA
+    t->alloc_device();
+#endif
+    return t;
 }
 
 inline Tensor from_vector(int rows, int cols, const std::vector<float>& values,
                            bool requires_grad = false) {
-    auto t = make_tensor(rows, cols, requires_grad);
+    auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
     if (values.size() != t->data.size())
         throw std::runtime_error("from_vector: tamaño no coincide con rows*cols");
     t->data = values;
+#ifdef USE_CUDA
+    t->to_device();
+#endif
     return t;
 }
 
 // Inicialización Xavier/Glorot uniforme, estándar para capas lineales.
 inline Tensor random_tensor(int rows, int cols, bool requires_grad, std::mt19937& rng) {
-    auto t = make_tensor(rows, cols, requires_grad);
+    auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
     float limit = std::sqrt(6.0f / static_cast<float>(rows + cols));
     std::uniform_real_distribution<float> dist(-limit, limit);
     for (auto& v : t->data) v = dist(rng);
+#ifdef USE_CUDA
+    t->to_device();
+#endif
     return t;
 }
 
 inline Tensor zeros(int rows, int cols, bool requires_grad = false) {
-    return make_tensor(rows, cols, requires_grad);
+    auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
+#ifdef USE_CUDA
+    t->alloc_device();
+#endif
+    return t;
 }
 
 // ---------- Backward: orden topológico + regla de la cadena ----------
@@ -98,6 +177,12 @@ inline void backward(const Tensor& loss) {
     std::vector<TensorImpl*> visited;
     build_topo(loss, order, visited);
     loss->grad[0] = 1.0f; // d(loss)/d(loss) = 1
+#ifdef USE_CUDA
+    if (loss->d_grad) {
+        float one = 1.0f;
+        cudaMemcpy(loss->d_grad, &one, sizeof(float), cudaMemcpyHostToDevice);
+    }
+#endif
     for (auto it = order.rbegin(); it != order.rend(); ++it) {
         if ((*it)->backward_fn) (*it)->backward_fn();
     }
