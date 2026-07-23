@@ -1,2 +1,19 @@
 .vscode/
 *.txt
+!CMakeLists.txt
+
+# Directorios de compilación y datos
+build/
+data/
+data_unzipped/
+metrics/
+models/
+
+# Archivos compilados y resultados
+vit_train
+vit_eval
+*.bin
+*.csv
+
+# Archivos temporales de Windows/WSL
+*:Zone.Identifier
