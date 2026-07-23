@@ -451,9 +451,9 @@ inline Tensor softmax_cross_entropy(const Tensor& logits, int label, std::vector
     int n = logits->cols;
 
 #ifdef USE_CUDA
-    // Alojar buffers en GPU para loss y probs
-    float* d_probs = nullptr;
-    cudaMalloc(&d_probs, n * sizeof(float));
+    // Alojar buffers en GPU para loss y probs usando el allocator
+    size_t probs_bytes = n * sizeof(float);
+    float* d_probs = CachingAllocator::allocate(probs_bytes);
 
     auto out = make_tensor(1, 1, true);
     cuda::softmax_cross_entropy_fwd(logits->d_data, label, n, out->d_data, d_probs);
@@ -462,12 +462,14 @@ inline Tensor softmax_cross_entropy(const Tensor& logits, int label, std::vector
     out->to_host();
     if (probs_out) {
         probs_out->resize(n);
-        cudaMemcpy(probs_out->data(), d_probs, n * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(probs_out->data(), d_probs, probs_bytes, cudaMemcpyDeviceToHost);
     }
 
     out->parents = {logits};
     TensorImpl* out_raw = out.get();
-    auto probs_guard = std::shared_ptr<float>(d_probs, [](float* p) { cudaFree(p); });
+    auto probs_guard = std::shared_ptr<float>(d_probs, [probs_bytes](float* p) { 
+        CachingAllocator::free(p, probs_bytes); 
+    });
     out->backward_fn = [logits, out_raw, probs_guard, label, n]() {
         if (!logits->requires_grad) return;
         float upstream = out_raw->grad[0]; // siempre 1.0 desde backward()

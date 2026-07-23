@@ -29,12 +29,33 @@
 #include <stdexcept>
 #include <string>
 #include <algorithm>
+#include <map>
 
 #ifdef USE_CUDA
 #include <cuda_runtime.h>
 #endif
 
 namespace vit {
+
+#ifdef USE_CUDA
+// Caching allocator súper simple para evitar fragmentación de memoria y CUDA overhead
+struct CachingAllocator {
+    inline static std::map<size_t, std::vector<float*>> pool;
+    static float* allocate(size_t bytes) {
+        if (!pool[bytes].empty()) {
+            float* ptr = pool[bytes].back();
+            pool[bytes].pop_back();
+            return ptr;
+        }
+        float* ptr = nullptr;
+        cudaMalloc(&ptr, bytes);
+        return ptr;
+    }
+    static void free(float* ptr, size_t bytes) {
+        if (ptr) pool[bytes].push_back(ptr);
+    }
+};
+#endif
 
 struct TensorImpl;
 using Tensor = std::shared_ptr<TensorImpl>;
@@ -56,11 +77,11 @@ struct TensorImpl : std::enable_shared_from_this<TensorImpl> {
     bool on_device = false;    // true si los datos están en GPU
 
     // Copia data y grad de CPU a GPU. Si los buffers device no existen, los
-    // aloja con cudaMalloc.
+    // aloja con CachingAllocator.
     void to_device() {
         size_t bytes = data.size() * sizeof(float);
-        if (!d_data) cudaMalloc(&d_data, bytes);
-        if (!d_grad) cudaMalloc(&d_grad, bytes);
+        if (!d_data) d_data = CachingAllocator::allocate(bytes);
+        if (!d_grad) d_grad = CachingAllocator::allocate(bytes);
         cudaMemcpy(d_data, data.data(), bytes, cudaMemcpyHostToDevice);
         cudaMemcpy(d_grad, grad.data(), bytes, cudaMemcpyHostToDevice);
         on_device = true;
@@ -74,12 +95,11 @@ struct TensorImpl : std::enable_shared_from_this<TensorImpl> {
         cudaMemcpy(grad.data(), d_grad, bytes, cudaMemcpyDeviceToHost);
     }
 
-    // Aloja buffers en GPU sin copiar datos de CPU (para tensores intermedios
-    // que se van a escribir directamente desde un kernel).
+    // Aloja buffers en GPU sin copiar datos de CPU.
     void alloc_device() {
         size_t bytes = data.size() * sizeof(float);
-        if (!d_data) cudaMalloc(&d_data, bytes);
-        if (!d_grad) cudaMalloc(&d_grad, bytes);
+        if (!d_data) d_data = CachingAllocator::allocate(bytes);
+        if (!d_grad) d_grad = CachingAllocator::allocate(bytes);
         cudaMemset(d_data, 0, bytes);
         cudaMemset(d_grad, 0, bytes);
         on_device = true;
@@ -91,8 +111,9 @@ struct TensorImpl : std::enable_shared_from_this<TensorImpl> {
     }
 
     void free_device() {
-        if (d_data) { cudaFree(d_data); d_data = nullptr; }
-        if (d_grad) { cudaFree(d_grad); d_grad = nullptr; }
+        size_t bytes = data.size() * sizeof(float);
+        if (d_data) { CachingAllocator::free(d_data, bytes); d_data = nullptr; }
+        if (d_grad) { CachingAllocator::free(d_grad, bytes); d_grad = nullptr; }
         on_device = false;
     }
 #endif
