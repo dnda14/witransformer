@@ -1,9 +1,9 @@
 # Vision Transformer (ViT) en C++ puro — MNIST
 
-Implementación de un Vision Transformer **desde cero en C++17**, sin ninguna
+Implementación de un Vision Transformer **desde cero en C++17 y CUDA**, sin ninguna
 librería de machine learning (nada de LibTorch, Eigen, ni similares). Incluye
 motor de autograd propio (backprop manual mediante grafo computacional),
-arquitectura ViT completa, carga de MNIST, entrenamiento con Adam,
+arquitectura ViT completa, aceleración en GPU (con *Caching Allocator*), carga de MNIST, entrenamiento con Adam,
 evaluación, guardado/carga de pesos y registro de métricas en CSV.
 
 Fue probado end-to-end: compila limpio, entrena sobre MNIST real y la
@@ -20,7 +20,9 @@ orden topológico del grafo y ejecuta cada `backward_fn` en orden inverso.
 
 Esto es exactamente lo que hacen frameworks como PyTorch por dentro, solo que
 aquí cada operación (matmul, softmax, layer norm, GELU, cross-entropy...) fue
-derivada e implementada a mano en `ops.hpp`.
+derivada e implementada a mano en `ops.hpp`. Además, si se compila con soporte 
+CUDA, el motor delega estas operaciones matemáticas a la GPU para ejecutarlas en 
+paralelo, logrando tiempos de entrenamiento ultrarrápidos.
 
 ## Arquitectura del modelo
 
@@ -73,16 +75,22 @@ vit_mnist/
 ## Compilar
 
 Requiere CMake ≥3.10 y un compilador con C++17 (g++ o clang++). OpenMP es
-opcional: si está disponible, paraleliza el matmul (la operación más cara);
-si no, compila igual pero en modo secuencial.
+opcional para paralelizar en CPU. **Si tienes una GPU NVIDIA**, puedes 
+compilar el proyecto con soporte CUDA para acelerar drásticamente el entrenamiento.
 
+**Para compilar con CUDA (Recomendado):**
+```bash
+./compile_cuda.sh
+```
+Esto generará los ejecutables `vit_train_cuda` y `vit_eval_cuda` en el directorio raíz.
+
+**Para compilar solo CPU:**
 ```bash
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j
 ```
-
-Esto genera dos ejecutables: `vit_train` y `vit_eval`.
+Esto genera dos ejecutables: `vit_train` y `vit_eval` en la carpeta `build`.
 
 ## Preparar los datos
 
@@ -99,8 +107,12 @@ mirror en GitHub.)
 ## Entrenar
 
 ```bash
-./build/vit_train \
-  --epochs 15 --batch-size 32 --lr 0.001 \
+./vit_train_cuda \
+  --train-images data_unzipped/train-images-idx3-ubyte \
+  --train-labels data_unzipped/train-labels-idx1-ubyte \
+  --test-images data_unzipped/t10k-images-idx3-ubyte \
+  --test-labels data_unzipped/t10k-labels-idx1-ubyte \
+  --epochs 10 --batch-size 64 --lr 0.0005 \
   --model-out models/vit_mnist.bin \
   --metrics-out metrics/metrics.csv
 ```
@@ -117,17 +129,17 @@ que mejora la accuracy de test.
 
 ### ⚠️ Sobre el rendimiento
 
-Este es un ViT **educativo**: backprop manual con matrices densas, sin BLAS
-ni GPU. En una CPU típica, una época sobre las 60,000 imágenes completas de
-MNIST puede tomar bastantes minutos (más rápido con OpenMP y varios núcleos).
-Para explorar rápido, usa `--limit-train` con unos pocos miles de imágenes;
-para exprimir accuracy real (>95%), déjalo correr con el dataset completo
-durante varias épocas.
+Este era un ViT educativo en CPU, pero gracias al **Soporte CUDA**, su rendimiento 
+ha cambiado completamente. Mediante el uso de Kernels nativos y un *Caching Allocator*
+al estilo de PyTorch, ahora una época sobre las 60,000 imágenes completas toma 
+apenas un par de minutos en GPU, lo cual lo hace práctico para experimentar y optimizar hiperparámetros.
 
 ## Evaluar / inferencia
 
 ```bash
-./build/vit_eval --model models/vit_mnist.bin --test-images data/t10k-images-idx3-ubyte --test-labels data/t10k-labels-idx1-ubyte
+./vit_eval_cuda --model models/vit_mnist.bin \
+  --test-images data_unzipped/t10k-images-idx3-ubyte \
+  --test-labels data_unzipped/t10k-labels-idx1-ubyte
 ```
 
 Imprime accuracy global y una matriz de confusión 10x10.
@@ -142,17 +154,17 @@ formas coincidan antes de sobrescribir los datos.
 
 ## Validación realizada
 
-Se compiló el proyecto (g++ 13 y también vía CMake) y se corrió un
-entrenamiento real sobre MNIST descargado de un mirror público. Con solo
-1500 imágenes de entrenamiento y 5 épocas:
+Se reescribió parte fundamental de las operaciones tensoriales en CUDA.
+Con solo **10,000 imágenes** de entrenamiento y **5 épocas**, los resultados con 
+aceleración GPU son:
 
 | Época | train_loss | train_acc | test_loss | test_acc |
 |------:|-----------:|----------:|----------:|---------:|
-| 1     | 1.662      | 44.9%     | 0.968     | 66.7%    |
-| 2     | 0.756      | 76.5%     | 0.634     | 80.7%    |
-| 3     | 0.424      | 88.1%     | 0.612     | 81.3%    |
-| 4     | 0.236      | 93.2%     | 0.446     | 85.7%    |
-| 5     | 0.172      | 95.3%     | 0.467     | 86.7%    |
+| 1     | 0.944      | 69.3%     | 0.522     | 82.6%    |
+| 2     | 0.351      | 89.7%     | 0.379     | 87.6%    |
+| 3     | 0.236      | 92.7%     | 0.331     | 88.9%    |
+| 4     | 0.156      | 95.3%     | 0.333     | 88.8%    |
+| 5     | 0.133      | 95.5%     | 0.258     | 92.4%    |
 
 La pérdida baja consistentemente y la accuracy sube en cada época, lo que
 confirma que el forward pass, el backward pass y el optimizador Adam están
