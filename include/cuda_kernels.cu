@@ -787,7 +787,8 @@ __global__ void adam_kernel(float* __restrict__ param,
                            float* __restrict__ m_buf,
                            float* __restrict__ v_buf,
                            float lr, float beta1, float beta2, float eps,
-                           float bc1, float bc2, float grad_scale, int size) {
+                           float bc1, float bc2, float grad_scale,
+                           float weight_decay, int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size) {
         float g = grad[idx] * grad_scale;
@@ -798,14 +799,18 @@ __global__ void adam_kernel(float* __restrict__ param,
         float mhat = mi / bc1;
         float vhat = vi / bc2;
         param[idx] -= lr * mhat / (sqrtf(vhat) + eps);
+        // AdamW: weight decay desacoplado
+        if (weight_decay > 0.0f)
+            param[idx] -= lr * weight_decay * param[idx];
     }
 }
 
 void adam_step(float* param, float* grad, float* m, float* v,
               float lr, float beta1, float beta2, float eps,
-              float bc1, float bc2, float grad_scale, int size) {
+              float bc1, float bc2, float grad_scale, float weight_decay,
+              int size) {
     int grid = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    adam_kernel<<<grid, BLOCK_SIZE>>>(param, grad, m, v, lr, beta1, beta2, eps, bc1, bc2, grad_scale, size);
+    adam_kernel<<<grid, BLOCK_SIZE>>>(param, grad, m, v, lr, beta1, beta2, eps, bc1, bc2, grad_scale, weight_decay, size);
 }
 
 // ============================================================================

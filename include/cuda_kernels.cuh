@@ -125,7 +125,8 @@ void softmax_cross_entropy_bwd(float upstream, const float* probs, int label,
 // Un paso de Adam directamente en GPU.
 void adam_step(float* param, float* grad, float* m, float* v,
               float lr, float beta1, float beta2, float eps,
-              float bc1, float bc2, float grad_scale, int size);
+              float bc1, float bc2, float grad_scale, float weight_decay,
+              int size);
 
 // cudaMemset wrapper para zero_grad
 void zero_memory(float* ptr, int size);

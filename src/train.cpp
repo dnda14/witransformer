@@ -33,6 +33,7 @@ struct Args {
     int epochs = 5;
     int batch_size = 32;
     float lr = 1e-3f;
+    float weight_decay = 0.0f;
     int limit_train = -1; // -1 = usar todo el dataset
     int limit_test  = -1;
     unsigned seed = 42;
@@ -54,6 +55,7 @@ static Args parse_args(int argc, char** argv) {
     a.epochs       = std::stoi(get("--epochs", std::to_string(a.epochs)));
     a.batch_size   = std::stoi(get("--batch-size", std::to_string(a.batch_size)));
     a.lr           = std::stof(get("--lr", std::to_string(a.lr)));
+    a.weight_decay = std::stof(get("--weight-decay", std::to_string(a.weight_decay)));
     a.limit_train  = std::stoi(get("--limit-train", std::to_string(a.limit_train)));
     a.limit_test   = std::stoi(get("--limit-test", std::to_string(a.limit_test)));
     a.seed         = static_cast<unsigned>(std::stoi(get("--seed", std::to_string(a.seed))));
@@ -88,7 +90,9 @@ int main(int argc, char** argv) {
     for (auto& p : params) total_params += p->data.size();
     std::cout << "Modelo ViT: " << params.size() << " tensores, " << total_params << " parametros totales\n";
 
-    Adam opt(params, args.lr);
+    Adam opt(params, args.lr, 0.9f, 0.999f, 1e-8f, args.weight_decay);
+    if (args.weight_decay > 0.0f)
+        std::cout << "AdamW weight_decay=" << args.weight_decay << "\n";
 
     std::ofstream metrics(args.metrics_out);
     metrics << "epoch,train_loss,train_acc,test_loss,test_acc,seconds\n";
