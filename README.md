@@ -26,7 +26,7 @@ La arquitectura sigue este flujo de procesamiento:
 
 ### Principales Operaciones Matemáticas
 
-Para mantener el espíritu didáctico del proyecto, aquí presentamos las 3 fórmulas matemáticas más críticas que se han programado desde cero en el código:
+En esta sección presentamos las fórmulas matemáticas más críticas que se han programado en el código:
 
 **1. Mecanismo de Atención (Self-Attention)**
 El núcleo del Transformer. Calcula qué parches de la imagen deben "prestarse atención" mutuamente cruzando Queries ($Q$), Keys ($K$) y Values ($V$):
