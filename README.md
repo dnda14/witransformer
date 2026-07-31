@@ -68,9 +68,9 @@ El código fuente está modularizado de forma lógica para separar las matemáti
 - `include/ops.hpp`: Contiene las operaciones matemáticas elementales (suma, multiplicación de matrices, softmax, etc.). Aquí se programa de forma manual la derivada matemática (regla de la cadena) de cada operación para hacer posible el aprendizaje.
 - `include/nn.hpp`: Define las capas de la red neuronal basándose en las operaciones anteriores. Incluye implementaciones de la Capa Lineal, Normalización, Atención y el Bloque Transformer completo.
 - `include/vit.hpp`: Ensambla las capas previamente definidas para construir la arquitectura completa del Vision Transformer. También maneja el guardado y carga del modelo.
-- `include/optimizer.hpp`: Implementa el algoritmo de optimización **Adam**, encargado de actualizar los pesos de la red neuronal utilizando los gradientes calculados.
+- `include/optimizer.hpp`: Implementa el algoritmo de optimización **AdamW**, encargado de actualizar los pesos de la red neuronal utilizando los gradientes calculados.
 - `src/train.cpp` y `src/eval.cpp`: Los programas principales que orquestan el ciclo de entrenamiento y la evaluación (inferencia) sobre el dataset de prueba.
-- `scripts/`: Contiene utilidades auxiliares, como el script en Python para descargar y preparar los datos de MNIST.
+- `scripts/`: Contiene utilidades auxiliares, como el script en Bash para descargar y preparar los datos de MNIST.
 
 ---
 
@@ -89,10 +89,10 @@ cmake --build . --config Release
 
 ## Preparación de los Datos
 
-El modelo utiliza el dataset clásico MNIST (imágenes de números escritos a mano). Para descargar y preparar automáticamente los archivos binarios, ejecuta el script de Python incluido:
+El modelo utiliza el dataset clásico MNIST (imágenes de números escritos a mano). Para descargar y preparar automáticamente los archivos binarios, ejecuta el script incluido:
 
 ```bash
-python scripts/download_data.py
+bash scripts/prepare_data.sh
 ```
 Esto creará una carpeta `data/` y colocará allí los archivos descomprimidos listos para ser consumidos por el programa.
 
@@ -103,7 +103,7 @@ Esto creará una carpeta `data/` y colocará allí los archivos descomprimidos l
 Una vez compilado el código y descargados los datos, puedes comenzar a entrenar el modelo ejecutando:
 
 ```bash
-./build/vit_train.exe --train-images data/train-images-idx3-ubyte --train-labels data/train-labels-idx1-ubyte --test-images data/t10k-images-idx3-ubyte --test-labels data/t10k-labels-idx1-ubyte --epochs 10
+./build/vit_train --train-images data/train-images-idx3-ubyte --train-labels data/train-labels-idx1-ubyte --test-images data/t10k-images-idx3-ubyte --test-labels data/t10k-labels-idx1-ubyte --epochs 10 --weight-decay 0.01
 ```
 
 Durante el entrenamiento, el programa informará del progreso en cada época (pérdida y precisión) y guardará los pesos del modelo (`.bin`) de manera automática si se presenta una mejora.
@@ -111,7 +111,7 @@ Durante el entrenamiento, el programa informará del progreso en cada época (p�
 Para evaluar un modelo previamente entrenado, puedes utilizar el programa de evaluación:
 
 ```bash
-./build/vit_eval.exe --model models/vit_mnist.bin --test-images data/t10k-images-idx3-ubyte --test-labels data/t10k-labels-idx1-ubyte
+./build/vit_eval --model models/vit_mnist.bin --test-images data/t10k-images-idx3-ubyte --test-labels data/t10k-labels-idx1-ubyte
 ```
 
 ---

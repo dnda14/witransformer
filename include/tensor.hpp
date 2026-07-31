@@ -1,23 +1,25 @@
-// tensor.hpp
-//
-// Motor mínimo de álgebra lineal + autograd (diferenciación automática en modo
-// inverso), escrito desde cero sin dependencias externas de ML.
-//
-// Idea central: cada Tensor es una matriz 2D (rows x cols) que, si participa
-// en operaciones, va construyendo un grafo computacional. Cada nodo guarda
-// una función `backward_fn` que sabe cómo propagar el gradiente hacia sus
-// "padres". Tensor::backward() hace un orden topológico del grafo y llama a
-// cada backward_fn en orden inverso (de la salida hacia las entradas), que es
-// exactamente la regla de la cadena aplicada nodo por nodo.
-//
-// Todo esto reemplaza a un framework como libtorch: aquí NO hay autograd
-// mágico, cada operación (matmul, softmax, layernorm, gelu, etc.) implementa
-// su propia derivada a mano en este archivo.
-//
-// Cuando USE_CUDA está definido, cada tensor puede almacenar datos tanto en
-// CPU (std::vector) como en GPU (punteros device). Las funciones to_device()
-// y to_host() transfieren datos entre ambos. Las operaciones en ops.hpp
-// eligen automáticamente el path CPU o GPU.
+/**
+ * @file tensor.hpp
+ * @brief Motor mínimo de álgebra lineal + autograd (diferenciación automática en modo inverso).
+ *
+ * Escrito desde cero sin dependencias externas de ML. Reemplaza la funcionalidad
+ * de un framework como libtorch: aquí NO hay autograd mágico, cada operación
+ * (matmul, softmax, layernorm, gelu, etc.) implementa su propia derivada a mano
+ * en ops.hpp.
+ *
+ * @details
+ * **Idea central:** cada Tensor es una matriz 2D (rows × cols) que, si participa
+ * en operaciones, va construyendo un **grafo computacional**. Cada nodo guarda
+ * una función `backward_fn` que sabe cómo propagar el gradiente hacia sus
+ * "padres". La función backward() hace un orden topológico del grafo y llama a
+ * cada backward_fn en orden inverso (de la salida hacia las entradas), que es
+ * exactamente la **regla de la cadena** aplicada nodo por nodo.
+ *
+ * **Soporte CUDA:** Cuando `USE_CUDA` está definido, cada tensor puede almacenar
+ * datos tanto en CPU (`std::vector`) como en GPU (punteros device). Las funciones
+ * `to_device()` y `to_host()` transfieren datos entre ambos. Las operaciones en
+ * ops.hpp eligen automáticamente el path CPU o GPU.
+ */
 
 #pragma once
 
@@ -38,9 +40,21 @@
 namespace vit {
 
 #ifdef USE_CUDA
-// Caching allocator súper simple para evitar fragmentación de memoria y CUDA overhead
+/**
+ * @brief Pool de memoria GPU simple para evitar fragmentación y overhead de cudaMalloc/cudaFree.
+ *
+ * En lugar de llamar a cudaMalloc/cudaFree repetidamente (que son lentos),
+ * reutiliza buffers previamente liberados agrupados por tamaño en bytes.
+ * Esto reduce significativamente el overhead durante el entrenamiento.
+ */
 struct CachingAllocator {
-    inline static std::map<size_t, std::vector<float*>> pool;
+    inline static std::map<size_t, std::vector<float*>> pool; ///< Pool de buffers libres, indexados por tamaño en bytes.
+
+    /**
+     * @brief Obtiene un buffer de GPU del pool, o aloja uno nuevo si no hay disponible.
+     * @param bytes Tamaño del buffer en bytes.
+     * @return Puntero al buffer en memoria de GPU (device memory).
+     */
     static float* allocate(size_t bytes) {
         if (!pool[bytes].empty()) {
             float* ptr = pool[bytes].back();
@@ -51,6 +65,12 @@ struct CachingAllocator {
         cudaMalloc(&ptr, bytes);
         return ptr;
     }
+
+    /**
+     * @brief Devuelve un buffer al pool para su reutilización (no lo libera realmente).
+     * @param ptr   Puntero al buffer en GPU.
+     * @param bytes Tamaño del buffer en bytes (debe coincidir con el usado en allocate).
+     */
     static void free(float* ptr, size_t bytes) {
         if (ptr) pool[bytes].push_back(ptr);
     }
@@ -58,27 +78,44 @@ struct CachingAllocator {
 #endif
 
 struct TensorImpl;
+
+/// Alias: un Tensor es un puntero compartido (shared_ptr) a TensorImpl.
 using Tensor = std::shared_ptr<TensorImpl>;
 
-// Representa un Tensor. Guarda los números, sus gradientes y la info para calcular derivadas.
+/**
+ * @brief Estructura principal del proyecto. Representa un tensor 2D (matriz).
+ *
+ * Almacena los datos numéricos, los gradientes acumulados y la información
+ * necesaria para recorrer el grafo computacional durante backpropagation.
+ * Hereda de `enable_shared_from_this` para poder obtener un shared_ptr a sí mismo.
+ */
 struct TensorImpl : std::enable_shared_from_this<TensorImpl> {
-    int rows = 0, cols = 0;
-    std::vector<float> data;   // tamaño rows*cols, almacenamiento row-major
-    std::vector<float> grad;   // mismo tamaño que data, acumulador de gradiente
-    bool requires_grad = false;
+    int rows = 0;              ///< Número de filas de la matriz.
+    int cols = 0;              ///< Número de columnas de la matriz.
+    std::vector<float> data;   ///< Datos de la matriz, tamaño rows×cols, almacenamiento row-major.
+    std::vector<float> grad;   ///< Gradientes acumulados, mismo tamaño que data.
+    bool requires_grad = false; ///< Si es true, este tensor participa en backpropagation.
 
-    // Grafo computacional: de qué tensores viene este y cómo propagar el
-    // gradiente hacia ellos.
-    std::vector<Tensor> parents;
-    std::function<void()> backward_fn; // usa 'this->grad' y escribe en parents[i]->grad
+    /// @name Grafo computacional
+    /// @{
+    std::vector<Tensor> parents;        ///< Tensores de los que proviene este (entradas de la operación).
+    std::function<void()> backward_fn;  ///< Función que propaga gradientes de `this->grad` hacia `parents[i]->grad`.
+    /// @}
 
 #ifdef USE_CUDA
-    float* d_data = nullptr;   // puntero a VRAM (device memory)
-    float* d_grad = nullptr;   // gradientes en VRAM
-    bool on_device = false;    // true si los datos están en GPU
+    /// @name Almacenamiento en GPU (solo cuando USE_CUDA está definido)
+    /// @{
+    float* d_data = nullptr;   ///< Puntero a los datos en VRAM (device memory).
+    float* d_grad = nullptr;   ///< Puntero a los gradientes en VRAM.
+    bool on_device = false;    ///< True si los datos están actualmente en GPU.
+    /// @}
 
-    // Copia data y grad de CPU a GPU. Si los buffers device no existen, los
-    // aloja con CachingAllocator.
+    /**
+     * @brief Copia data y grad de CPU a GPU.
+     *
+     * Si los buffers en GPU no existen, los aloja usando CachingAllocator.
+     * Después de esta llamada, on_device será true.
+     */
     void to_device() {
         size_t bytes = data.size() * sizeof(float);
         if (!d_data) d_data = CachingAllocator::allocate(bytes);
@@ -88,7 +125,11 @@ struct TensorImpl : std::enable_shared_from_this<TensorImpl> {
         on_device = true;
     }
 
-    // Copia data y grad de GPU a CPU.
+    /**
+     * @brief Copia data y grad de GPU a CPU.
+     *
+     * Los datos en GPU no se liberan; solo se copian a los vectores de CPU.
+     */
     void to_host() {
         if (!d_data) return;
         size_t bytes = data.size() * sizeof(float);
@@ -96,7 +137,11 @@ struct TensorImpl : std::enable_shared_from_this<TensorImpl> {
         cudaMemcpy(grad.data(), d_grad, bytes, cudaMemcpyDeviceToHost);
     }
 
-    // Aloja buffers en GPU sin copiar datos de CPU.
+    /**
+     * @brief Aloja buffers en GPU inicializados a cero, sin copiar datos de CPU.
+     *
+     * Útil para tensores de salida que serán escritos directamente por kernels CUDA.
+     */
     void alloc_device() {
         size_t bytes = data.size() * sizeof(float);
         if (!d_data) d_data = CachingAllocator::allocate(bytes);
@@ -106,11 +151,12 @@ struct TensorImpl : std::enable_shared_from_this<TensorImpl> {
         on_device = true;
     }
 
-    // Pone a cero los gradientes en GPU.
+    /** @brief Pone a cero los gradientes en GPU (d_grad). */
     void zero_grad_device() {
         if (d_grad) cudaMemset(d_grad, 0, data.size() * sizeof(float));
     }
 
+    /** @brief Devuelve los buffers de GPU al CachingAllocator y marca on_device = false. */
     void free_device() {
         size_t bytes = data.size() * sizeof(float);
         if (d_data) { CachingAllocator::free(d_data, bytes); d_data = nullptr; }
@@ -119,18 +165,36 @@ struct TensorImpl : std::enable_shared_from_this<TensorImpl> {
     }
 #endif
 
+    /**
+     * @brief Construye un tensor de dimensiones r × c, inicializado a ceros.
+     * @param r  Número de filas.
+     * @param c  Número de columnas.
+     * @param rg Si es true, el tensor participará en backpropagation.
+     */
     TensorImpl(int r, int c, bool rg = false)
         : rows(r), cols(c), data(static_cast<size_t>(r) * c, 0.0f),
           grad(static_cast<size_t>(r) * c, 0.0f), requires_grad(rg) {}
 
 #ifdef USE_CUDA
+    /** @brief Destructor: devuelve los buffers de GPU al pool. */
     ~TensorImpl() { free_device(); }
 #endif
 
+    /** @brief Acceso mutable al elemento en la fila r, columna c. */
     inline float& at(int r, int c) { return data[static_cast<size_t>(r) * cols + c]; }
+
+    /** @brief Acceso de solo lectura al elemento en la fila r, columna c. */
     inline float at(int r, int c) const { return data[static_cast<size_t>(r) * cols + c]; }
+
+    /** @brief Acceso mutable al gradiente en la fila r, columna c. */
     inline float& g(int r, int c) { return grad[static_cast<size_t>(r) * cols + c]; }
 
+    /**
+     * @brief Pone a cero todos los gradientes (CPU y GPU si aplica).
+     *
+     * Se llama antes de cada paso de optimización para evitar acumular
+     * gradientes de iteraciones anteriores.
+     */
     void zero_grad() {
         std::fill(grad.begin(), grad.end(), 0.0f);
 #ifdef USE_CUDA
@@ -139,9 +203,15 @@ struct TensorImpl : std::enable_shared_from_this<TensorImpl> {
     }
 };
 
-// ---------- Construcción básica ----------
+// ======================= Construcción de Tensores =======================
 
-// Crea un tensor vacío (lleno de ceros).
+/**
+ * @brief Crea un tensor vacío (lleno de ceros).
+ * @param rows          Número de filas.
+ * @param cols          Número de columnas.
+ * @param requires_grad Si es true, el tensor participará en backpropagation.
+ * @return Tensor de dimensiones (rows, cols) inicializado a cero.
+ */
 inline Tensor make_tensor(int rows, int cols, bool requires_grad = false) {
     auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
 #ifdef USE_CUDA
@@ -150,7 +220,15 @@ inline Tensor make_tensor(int rows, int cols, bool requires_grad = false) {
     return t;
 }
 
-// Crea un tensor usando datos de un vector de C++.
+/**
+ * @brief Crea un tensor a partir de un vector de datos existente.
+ * @param rows          Número de filas.
+ * @param cols          Número de columnas.
+ * @param values        Vector con los datos (debe tener exactamente rows×cols elementos).
+ * @param requires_grad Si es true, el tensor participará en backpropagation.
+ * @return Tensor con los datos copiados del vector.
+ * @throws std::runtime_error Si values.size() != rows×cols.
+ */
 inline Tensor from_vector(int rows, int cols, const std::vector<float>& values,
                            bool requires_grad = false) {
     auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
@@ -163,7 +241,19 @@ inline Tensor from_vector(int rows, int cols, const std::vector<float>& values,
     return t;
 }
 
-// Crea un tensor con valores aleatorios (útil para iniciar los pesos de la red).
+/**
+ * @brief Crea un tensor con valores aleatorios usando inicialización Xavier/Glorot uniforme.
+ *
+ * Los valores se muestrean uniformemente en [-limit, +limit] donde
+ * limit = √(6 / (rows + cols)). Esta inicialización es estándar para capas
+ * lineales y ayuda a que los gradientes no exploten ni se desvanezcan.
+ *
+ * @param rows          Número de filas.
+ * @param cols          Número de columnas.
+ * @param requires_grad Si es true, el tensor participará en backpropagation.
+ * @param rng           Generador de números aleatorios (Mersenne Twister).
+ * @return Tensor con valores aleatorios Xavier/Glorot.
+ */
 inline Tensor random_tensor(int rows, int cols, bool requires_grad, std::mt19937& rng) {
     auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
     float limit = std::sqrt(6.0f / static_cast<float>(rows + cols));
@@ -175,7 +265,13 @@ inline Tensor random_tensor(int rows, int cols, bool requires_grad, std::mt19937
     return t;
 }
 
-// Crea un tensor lleno de ceros.
+/**
+ * @brief Crea un tensor lleno de ceros (equivalente a make_tensor).
+ * @param rows          Número de filas.
+ * @param cols          Número de columnas.
+ * @param requires_grad Si es true, el tensor participará en backpropagation.
+ * @return Tensor de dimensiones (rows, cols) inicializado a cero.
+ */
 inline Tensor zeros(int rows, int cols, bool requires_grad = false) {
     auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
 #ifdef USE_CUDA
@@ -184,8 +280,19 @@ inline Tensor zeros(int rows, int cols, bool requires_grad = false) {
     return t;
 }
 
-// ---------- Backward: orden topológico + regla de la cadena ----------
+// ======================= Backward (Backpropagation) =======================
 
+/**
+ * @brief Construye un orden topológico del grafo computacional mediante DFS.
+ *
+ * Recorre recursivamente los padres de cada tensor y los agrega al vector
+ * `order` en orden topológico (padres antes que hijos). El vector `visited`
+ * evita procesar un nodo más de una vez.
+ *
+ * @param t       Tensor raíz desde donde empezar el recorrido.
+ * @param order   [out] Vector donde se acumula el orden topológico.
+ * @param visited [out] Conjunto de nodos ya visitados (para evitar ciclos).
+ */
 inline void build_topo(const Tensor& t, std::vector<Tensor>& order,
                         std::vector<TensorImpl*>& visited) {
     if (std::find(visited.begin(), visited.end(), t.get()) != visited.end()) return;
@@ -194,7 +301,20 @@ inline void build_topo(const Tensor& t, std::vector<Tensor>& order,
     order.push_back(t);
 }
 
-// Calcula los gradientes (derivadas) yendo de atrás hacia adelante en la red.
+/**
+ * @brief Ejecuta backpropagation desde un escalar de pérdida.
+ *
+ * Calcula los gradientes de todos los tensores en el grafo computacional
+ * aplicando la **regla de la cadena** en orden inverso (del loss hacia las entradas).
+ *
+ * Algoritmo:
+ * 1. Construye el orden topológico del grafo con build_topo().
+ * 2. Inicializa d(loss)/d(loss) = 1.0.
+ * 3. Recorre el grafo en orden inverso, llamando a backward_fn de cada nodo.
+ *
+ * @param loss Tensor escalar (1×1) con el valor de la pérdida.
+ * @throws std::runtime_error Si loss no es un escalar 1×1.
+ */
 inline void backward(const Tensor& loss) {
     if (loss->rows != 1 || loss->cols != 1)
         throw std::runtime_error("backward() debe llamarse sobre un escalar 1x1");

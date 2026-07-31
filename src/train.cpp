@@ -1,14 +1,28 @@
-// train.cpp — Entrena el ViT sobre MNIST desde cero (backprop manual).
-//
-// Uso:
-//   ./vit_train --train-images data/train-images-idx3-ubyte
-//               --train-labels data/train-labels-idx1-ubyte
-//               --test-images  data/t10k-images-idx3-ubyte
-//               --test-labels  data/t10k-labels-idx1-ubyte
-//               --epochs 10 --batch-size 32 --lr 0.001
-//               --model-out models/vit_mnist.bin --metrics-out metrics/metrics.csv
-//
-// Todos los argumentos tienen valores por defecto razonables (ver parse_args).
+/**
+ * @file train.cpp
+ * @brief Programa principal de entrenamiento del Vision Transformer sobre MNIST.
+ *
+ * Entrena el ViT desde cero usando backpropagation manual y el optimizador AdamW.
+ * Durante el entrenamiento:
+ * - Mezcla el dataset en cada época.
+ * - Procesa los datos en mini-batches.
+ * - Evalúa en el conjunto de prueba al final de cada época.
+ * - Guarda automáticamente el mejor modelo (por test_acc).
+ * - Registra métricas en un archivo CSV.
+ *
+ * @par Uso:
+ * @code
+ * ./vit_train --train-images data/train-images-idx3-ubyte
+ *             --train-labels data/train-labels-idx1-ubyte
+ *             --test-images  data/t10k-images-idx3-ubyte
+ *             --test-labels  data/t10k-labels-idx1-ubyte
+ *             --epochs 10 --batch-size 32 --lr 0.001
+ *             --weight-decay 0.01
+ *             --model-out models/vit_mnist.bin
+ *             --metrics-out metrics/metrics.csv
+ * @endcode
+ * Todos los argumentos tienen valores por defecto razonables (ver Args).
+ */
 
 #include "../include/vit.hpp"
 #include "../include/optimizer.hpp"
@@ -23,22 +37,34 @@
 
 using namespace vit;
 
+/**
+ * @brief Argumentos de línea de comandos para el entrenamiento.
+ *
+ * Todos los campos tienen valores por defecto razonables para MNIST.
+ * Se pueden sobreescribir pasando --nombre valor en la línea de comandos.
+ */
 struct Args {
-    std::string train_images = "data/train-images-idx3-ubyte";
-    std::string train_labels = "data/train-labels-idx1-ubyte";
-    std::string test_images  = "data/t10k-images-idx3-ubyte";
-    std::string test_labels  = "data/t10k-labels-idx1-ubyte";
-    std::string model_out    = "models/vit_mnist.bin";
-    std::string metrics_out  = "metrics/metrics.csv";
-    int epochs = 5;
-    int batch_size = 32;
-    float lr = 1e-3f;
-    float weight_decay = 0.0f;
-    int limit_train = -1; // -1 = usar todo el dataset
-    int limit_test  = -1;
-    unsigned seed = 42;
+    std::string train_images = "data/train-images-idx3-ubyte"; ///< Ruta al archivo de imágenes de entrenamiento.
+    std::string train_labels = "data/train-labels-idx1-ubyte"; ///< Ruta al archivo de etiquetas de entrenamiento.
+    std::string test_images  = "data/t10k-images-idx3-ubyte";  ///< Ruta al archivo de imágenes de prueba.
+    std::string test_labels  = "data/t10k-labels-idx1-ubyte";  ///< Ruta al archivo de etiquetas de prueba.
+    std::string model_out    = "models/vit_mnist.bin";          ///< Ruta donde guardar el mejor modelo.
+    std::string metrics_out  = "metrics/metrics.csv";           ///< Ruta donde guardar las métricas por época.
+    int epochs = 5;          ///< Número de épocas de entrenamiento.
+    int batch_size = 32;     ///< Tamaño del mini-batch.
+    float lr = 1e-3f;        ///< Learning rate (tasa de aprendizaje).
+    float weight_decay = 0.0f; ///< Coeficiente de weight decay para AdamW (0 = Adam puro).
+    int limit_train = -1;    ///< Limitar el dataset de train a N imágenes (-1 = usar todo).
+    int limit_test  = -1;    ///< Limitar el dataset de test a N imágenes (-1 = usar todo).
+    unsigned seed = 42;      ///< Semilla para reproducibilidad.
 };
 
+/**
+ * @brief Parsea los argumentos de línea de comandos en formato --clave valor.
+ * @param argc Número de argumentos.
+ * @param argv Array de argumentos.
+ * @return Struct Args con los valores parseados.
+ */
 static Args parse_args(int argc, char** argv) {
     Args a;
     std::map<std::string, std::string> kv;
@@ -62,14 +88,34 @@ static Args parse_args(int argc, char** argv) {
     return a;
 }
 
+/**
+ * @brief Retorna el índice del elemento máximo de un vector (usado para obtener la clase predicha).
+ * @param v Vector de probabilidades o logits.
+ * @return Índice del elemento con mayor valor.
+ */
 static int argmax(const std::vector<float>& v) {
     return static_cast<int>(std::max_element(v.begin(), v.end()) - v.begin());
 }
 
+/**
+ * @brief Punto de entrada principal del programa de entrenamiento.
+ *
+ * Flujo:
+ * 1. Parsear argumentos de CLI.
+ * 2. Cargar dataset MNIST (train + test).
+ * 3. Construir el modelo ViT con la configuración por defecto.
+ * 4. Crear el optimizador AdamW.
+ * 5. Para cada época:
+ *    a. Mezclar índices de entrenamiento.
+ *    b. Iterar mini-batches: forward → loss → backward → optimizer step.
+ *    c. Evaluar en el conjunto de test.
+ *    d. Guardar métricas y el mejor modelo.
+ */
 int main(int argc, char** argv) {
     Args args = parse_args(argc, argv);
     std::mt19937 rng(args.seed);
 
+    // --- Carga de datos ---
     std::cout << "Cargando MNIST...\n";
     MnistDataset train = load_mnist(args.train_images, args.train_labels);
     MnistDataset test  = load_mnist(args.test_images, args.test_labels);
@@ -83,6 +129,7 @@ int main(int argc, char** argv) {
     }
     std::cout << "Train: " << train.size() << " imagenes | Test: " << test.size() << " imagenes\n";
 
+    // --- Construcción del modelo ---
     ViTConfig cfg; // valores por defecto: patch 7x7, embed_dim 64, depth 4, heads 4
     VisionTransformer model(cfg, rng);
     auto params = model.parameters();
@@ -90,10 +137,12 @@ int main(int argc, char** argv) {
     for (auto& p : params) total_params += p->data.size();
     std::cout << "Modelo ViT: " << params.size() << " tensores, " << total_params << " parametros totales\n";
 
+    // --- Optimizador ---
     Adam opt(params, args.lr, 0.9f, 0.999f, 1e-8f, args.weight_decay);
     if (args.weight_decay > 0.0f)
         std::cout << "AdamW weight_decay=" << args.weight_decay << "\n";
 
+    // --- Archivo de métricas ---
     std::ofstream metrics(args.metrics_out);
     metrics << "epoch,train_loss,train_acc,test_loss,test_acc,seconds\n";
 
@@ -102,6 +151,7 @@ int main(int argc, char** argv) {
 
     float best_test_acc = -1.0f;
 
+    // --- Bucle de entrenamiento ---
     for (int epoch = 1; epoch <= args.epochs; ++epoch) {
         auto t0 = std::chrono::steady_clock::now();
         std::shuffle(indices.begin(), indices.end(), rng);
@@ -110,10 +160,12 @@ int main(int argc, char** argv) {
         int correct = 0;
         int n = static_cast<int>(indices.size());
 
+        // Iterar mini-batches
         for (int start = 0; start < n; start += args.batch_size) {
             int end = std::min(start + args.batch_size, n);
             int bs = end - start;
             opt.zero_grad();
+            // Acumular gradientes del mini-batch
             for (int bi = start; bi < end; ++bi) {
                 int idx = indices[bi];
                 Tensor logits = model.forward(train.images[idx]);
@@ -123,8 +175,10 @@ int main(int argc, char** argv) {
                 running_loss += loss->data[0];
                 if (argmax(probs) == train.labels[idx]) ++correct;
             }
+            // Actualizar pesos (grad_scale = 1/batch_size para promediar gradientes)
             opt.step(1.0f / static_cast<float>(bs));
 
+            // Progreso
             int done = end;
             if ((done / args.batch_size) % 20 == 0 || done == n) {
                 std::cout << "\r  epoca " << epoch << ": " << done << "/" << n
@@ -157,10 +211,12 @@ int main(int argc, char** argv) {
                   << " | test_loss=" << test_loss << " test_acc=" << test_acc
                   << " | " << secs << "s\n";
 
+        // Guardar métricas en CSV
         metrics << epoch << "," << train_loss << "," << train_acc << ","
                 << test_loss << "," << test_acc << "," << secs << "\n";
         metrics.flush();
 
+        // Guardar mejor modelo
         if (test_acc > best_test_acc) {
             best_test_acc = test_acc;
             model.save(args.model_out);
