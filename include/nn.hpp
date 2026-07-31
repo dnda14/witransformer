@@ -8,14 +8,13 @@
 
 namespace vit {
 
-// Interfaz común: toda capa puede exponer sus parámetros para el optimizador
-// y para guardar/cargar pesos.
+// Molde base para las capas de la red. Todas las capas deben poder entregar sus parámetros.
 struct Module {
     virtual std::vector<Tensor> parameters() = 0;
     virtual ~Module() = default;
 };
 
-// -------------------- Linear: y = x W + b --------------------
+// Capa Lineal: Multiplica la entrada por los pesos (W) y suma un sesgo (b).
 struct Linear : Module {
     Tensor W; // (in, out)
     Tensor b; // (1, out)
@@ -31,7 +30,7 @@ struct Linear : Module {
     std::vector<Tensor> parameters() override { return {W, b}; }
 };
 
-// -------------------- LayerNorm --------------------
+// Normaliza los datos para que el entrenamiento de la red sea más estable y rápido.
 struct LayerNorm : Module {
     Tensor gamma, beta;
     int dim;
@@ -43,7 +42,7 @@ struct LayerNorm : Module {
     std::vector<Tensor> parameters() override { return {gamma, beta}; }
 };
 
-// -------------------- Multi-Head Self-Attention --------------------
+// Mecanismo de Atención: Permite a la red decidir qué partes de la entrada son más importantes.
 struct MultiHeadSelfAttention : Module {
     int dim, num_heads, head_dim;
     Linear q_proj, k_proj, v_proj, out_proj;
@@ -87,7 +86,7 @@ struct MultiHeadSelfAttention : Module {
     }
 };
 
-// -------------------- MLP (feed-forward) --------------------
+// Pequeña red neuronal tradicional con dos capas lineales.
 struct MLP : Module {
     Linear fc1, fc2;
     MLP(int dim, int hidden_dim, std::mt19937& rng) : fc1(dim, hidden_dim, rng), fc2(hidden_dim, dim, rng) {}
@@ -99,7 +98,7 @@ struct MLP : Module {
     }
 };
 
-// -------------------- Bloque Transformer (pre-norm, como en ViT) --------------------
+// Bloque completo de un Transformer (junta Atención, MLP y Normalización).
 struct TransformerBlock : Module {
     LayerNorm ln1, ln2;
     MultiHeadSelfAttention attn;

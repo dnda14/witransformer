@@ -1,23 +1,8 @@
 // ops.hpp
 //
-// Cada función crea un Tensor de salida y le asigna un backward_fn que
-// implementa a mano la derivada de esa operación. Este es el "backprop
-// manual" pedido: no hay diferenciación simbólica ni numérica, cada regla
-// de la cadena está escrita explícitamente aquí.
-//
-// Cuando USE_CUDA está definido, las operaciones se ejecutan en GPU llamando
-// a los kernels de cuda_kernels.cuh. La versión CPU se mantiene intacta
-// como fallback cuando se compila sin CUDA.
-//
-// NOTA IMPORTANTE sobre gestión de memoria: backward_fn se guarda DENTRO del
-// propio nodo `out` (out->backward_fn = ...). Si la lambda capturara `out`
-// (shared_ptr) por valor, se crearía un ciclo de referencias (out posee a
-// backward_fn, que posee una referencia a out) y el nodo nunca se liberaría,
-// aunque nada más lo usara -> fuga de memoria que crece sin límite durante el
-// entrenamiento. Por eso, dentro de cada backward_fn capturamos un puntero
-// crudo `out_raw = out.get()`: es seguro porque mientras backward_fn se
-// ejecuta, algo más arriba en la pila (el vector `order` de build_topo, o el
-// grafo hacia adelante) sigue manteniendo vivo a `out`.
+// Operaciones matemáticas para Tensores (Suma, Multiplicación de Matrices, etc.).
+// Aquí se programa cómo calcular la derivada (gradiente) de cada operación 
+// para que la red neuronal pueda aprender de sus errores (Backpropagation).
 
 #pragma once
 

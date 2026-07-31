@@ -1,185 +1,140 @@
-# Vision Transformer (ViT) en C++ puro — MNIST
+# Vision Transformer (ViT) en C++ — Clasificación de MNIST
 
-Implementación de un Vision Transformer **desde cero en C++17 y CUDA**, sin ninguna
-librería de machine learning (nada de LibTorch, Eigen, ni similares). Incluye
-motor de autograd propio (backprop manual mediante grafo computacional),
-arquitectura ViT completa, aceleración en GPU (con *Caching Allocator*), carga de MNIST, entrenamiento con Adam,
-evaluación, guardado/carga de pesos y registro de métricas en CSV.
+Este repositorio contiene una implementación de un **Vision Transformer (ViT)** desarrollada desde cero en **C++17** (con soporte opcional para aceleración por GPU mediante **CUDA**). 
 
-Fue probado end-to-end: compila limpio, entrena sobre MNIST real y la
-accuracy sube de forma consistente (ver sección "Validación" abajo).
+El proyecto fue diseñado sin dependencias de librerías externas de Machine Learning (como PyTorch o TensorFlow). Su propósito principal es ilustrar cómo operan internamente los motores de cálculo tensorial, la diferenciación automática (Backpropagation) y la arquitectura Transformer.
 
-## ¿Cómo funciona el autograd?
+---
 
-No hay diferenciación automática "mágica" de un framework. Cada tensor
-(`include/tensor.hpp`) es un nodo de un grafo computacional: cuando una
-operación (`include/ops.hpp`) produce un tensor de salida, le asigna una
-función `backward_fn` que sabe calcular a mano la derivada de esa operación
-específica (regla de la cadena escrita explícitamente). `backward()` hace un
-orden topológico del grafo y ejecuta cada `backward_fn` en orden inverso.
+## Arquitectura del Modelo (Vision Transformer)
 
-Esto es exactamente lo que hacen frameworks como PyTorch por dentro, solo que
-aquí cada operación (matmul, softmax, layer norm, GELU, cross-entropy...) fue
-derivada e implementada a mano en `ops.hpp`. Además, si se compila con soporte 
-CUDA, el motor delega estas operaciones matemáticas a la GPU para ejecutarlas en 
-paralelo, logrando tiempos de entrenamiento ultrarrápidos.
+A diferencia de las Redes Neuronales Convolucionales (CNN) clásicas, que procesan imágenes píxel por píxel buscando patrones locales, el Vision Transformer trata a la imagen de manera similar a como un modelo de lenguaje procesa texto.
 
-## Arquitectura del modelo
+La arquitectura sigue este flujo de procesamiento:
 
+```mermaid
+graph TD
+    %% Estilos
+    classDef input fill:#f9f6f7,stroke:#333,stroke-width:2px;
+    classDef embed fill:#e6f7ff,stroke:#1890ff,stroke-width:2px;
+    classDef trans fill:#f6ffed,stroke:#52c41a,stroke-width:2px;
+    classDef out fill:#fff1f0,stroke:#f5222d,stroke-width:2px;
+
+    A[Imagen MNIST 28x28]:::input -->|Dividir| B[16 Parches de 7x7]:::input
+    B -->|Aplanar| C[Vectores de 49 dim]:::input
+    C -->|Proyección| D[Embeddings de 64 dim]:::embed
+    
+    D --> E{Añadir Token [CLS]<br>+ Positional Embeddings}:::embed
+    
+    E --> F[Bloque Transformer 1]:::trans
+    F --> G[Bloque Transformer 2]:::trans
+    G --> H[Bloque Transformer 3]:::trans
+    H --> I[Bloque Transformer 4]:::trans
+    
+    subgraph Interior de cada Bloque
+    direction TB
+    T_In[Entrada] --> LN1[LayerNorm]
+    LN1 --> MHA[Multi-Head Attention]
+    MHA --> ADD1((+ Residual))
+    T_In ---> ADD1
+    ADD1 --> LN2[LayerNorm]
+    LN2 --> MLP[MLP]
+    MLP --> ADD2((+ Residual))
+    ADD1 ---> ADD2
+    ADD2 --> T_Out[Salida]
+    end
+    
+    I -->|Extraer| J[Token CLS Final]:::out
+    J --> K[Capa Lineal Clasificadora]:::out
+    K --> L((Dígito 0-9)):::out
 ```
-imagen 28x28 (1 canal)
-  -> patchify: 16 parches de 7x7 = 49 valores c/u   (patch_size=7)
-  -> Linear(49 -> 64)                                (patch embedding)
-  -> prepend token [CLS] + sumar embeddings posicionales
-  -> N=4 bloques Transformer (pre-norm), cada uno:
-       LayerNorm -> Multi-Head Self-Attention (4 heads) -> +residual
-       LayerNorm -> MLP (64->128->64, GELU)             -> +residual
-  -> LayerNorm final
-  -> tomar el token [CLS]
-  -> Linear(64 -> 10) -> logits
-  -> softmax + cross-entropy
-```
+1. **División en Parches (Patchify):** La imagen de entrada (28x28 píxeles en el caso de MNIST) se divide en cuadrículas pequeñas, por ejemplo, parches de 7x7.
+2. **Proyección Lineal (Embedding):** Cada parche se aplana y se pasa por una capa lineal para convertirlo en un vector numérico representativo (embedding).
+3. **Información Posicional:** Como el modelo no procesa los parches en un orden espacial estricto, se le suma una "etiqueta posicional" a cada vector para que la red sepa en qué lugar de la imagen original iba ese parche.
+4. **Bloques Transformer:** Los vectores pasan a través de múltiples bloques idénticos (por defecto 4). Cada bloque contiene:
+   - **Multi-Head Self-Attention (Atención):** Permite que la red analice la relación entre diferentes parches de la imagen, sin importar qué tan lejos estén unos de otros.
+   - **Perceptrón Multicapa (MLP):** Procesa la información extraída por la capa de atención.
+   - **Normalización (LayerNorm) y Conexiones Residuales:** Aseguran que el entrenamiento sea estable.
+5. **Clasificación:** Al final, se extrae la información consolidada en un token especial (llamado `[CLS]`) y se pasa por una última capa lineal para decidir a qué dígito (del 0 al 9) corresponde la imagen.
 
-Configuración por defecto en `include/vit.hpp` (`struct ViTConfig`):
-patch 7x7, embed_dim=64, depth=4, heads=4, mlp_hidden=128. Se puede cambiar
-libremente ahí (recompilar después).
+---
 
-**Nota sobre el diseño**: para mantener el motor de tensores simple (matrices
-2D, sin dimensión de batch), cada imagen se procesa individualmente. El
-"mini-batch" se implementa acumulando gradientes de varias imágenes antes de
-llamar al optimizador — matemáticamente equivalente a un batch real, pero sin
-necesitar operaciones tensoriales de más de 2 dimensiones.
+## Estructura del Código
 
-## Estructura del proyecto
+El código fuente está modularizado de forma lógica para separar las matemáticas base de la lógica de la red neuronal:
 
-```
-vit_mnist/
-├── CMakeLists.txt
-├── include/
-│   ├── tensor.hpp      # Tensor + motor de autograd (grafo + backward())
-│   ├── ops.hpp          # Operaciones diferenciables (matmul, softmax, etc.)
-│   ├── nn.hpp            # Capas: Linear, LayerNorm, MultiHeadAttention, MLP...
-│   ├── vit.hpp            # Modelo ViT completo + guardado/carga de pesos
-│   ├── mnist.hpp           # Lector del formato IDX de MNIST
-│   └── optimizer.hpp        # Adam implementado a mano
-├── src/
-│   ├── train.cpp    # Entrenamiento: epochs, mini-batches, eval, checkpoints
-│   └── eval.cpp      # Carga un modelo guardado y evalúa (+ matriz de confusión)
-├── scripts/
-│   └── prepare_data.sh   # Descomprime (o descarga) los archivos de MNIST
-├── data/            # MNIST comprimido (.gz), listo para usar
-├── models/         # Aquí se guardan los checkpoints (.bin)
-└── metrics/       # Aquí se guardan los CSV de métricas por época
-```
+- `include/tensor.hpp`: Implementa la estructura fundamental `Tensor`. Es el bloque de construcción del proyecto; almacena los datos numéricos, los gradientes y la información para construir el grafo de dependencias de operaciones.
+- `include/ops.hpp`: Contiene las operaciones matemáticas elementales (suma, multiplicación de matrices, softmax, etc.). Aquí se programa de forma manual la derivada matemática (regla de la cadena) de cada operación para hacer posible el aprendizaje.
+- `include/nn.hpp`: Define las capas de la red neuronal basándose en las operaciones anteriores. Incluye implementaciones de la Capa Lineal, Normalización, Atención y el Bloque Transformer completo.
+- `include/vit.hpp`: Ensambla las capas previamente definidas para construir la arquitectura completa del Vision Transformer. También maneja el guardado y carga del modelo.
+- `include/optimizer.hpp`: Implementa el algoritmo de optimización **Adam**, encargado de actualizar los pesos de la red neuronal utilizando los gradientes calculados.
+- `src/train.cpp` y `src/eval.cpp`: Los programas principales que orquestan el ciclo de entrenamiento y la evaluación (inferencia) sobre el dataset de prueba.
+- `scripts/`: Contiene utilidades auxiliares, como el script en Python para descargar y preparar los datos de MNIST.
 
-## Compilar
+---
 
-Requiere CMake ≥3.10 y un compilador con C++17 (g++ o clang++). OpenMP es
-opcional para paralelizar en CPU. **Si tienes una GPU NVIDIA**, puedes 
-compilar el proyecto con soporte CUDA para acelerar drásticamente el entrenamiento.
+## Requisitos y Compilación
 
-**Para compilar con CUDA (Recomendado):**
+Para compilar el proyecto, necesitas un compilador compatible con C++17 (como `g++`, `clang++` o MSVC). 
+
+Existen dos formas de compilar el proyecto:
+
+### Opción A: Usando CMake (Estándar)
+Si tienes CMake instalado, es la manera más robusta:
 ```bash
-./compile_cuda.sh
-```
-Esto generará los ejecutables `vit_train_cuda` y `vit_eval_cuda` en el directorio raíz.
-
-**Para compilar solo CPU:**
-```bash
-mkdir build && cd build
+mkdir build
+cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j
+cmake --build . --config Release
 ```
-Esto genera dos ejecutables: `vit_train` y `vit_eval` en la carpeta `build`.
 
-## Preparar los datos
+## Preparación de los Datos
 
-El dataset ya viene incluido comprimido en `data/*.gz`. Antes de entrenar,
-descomprímelo:
+El modelo utiliza el dataset clásico MNIST (imágenes de números escritos a mano). Para descargar y preparar automáticamente los archivos binarios, ejecuta el script de Python incluido:
 
 ```bash
-bash scripts/prepare_data.sh
+python scripts/download_data.py
 ```
+Esto creará una carpeta `data/` y colocará allí los archivos descomprimidos listos para ser consumidos por el programa.
 
-(Si los `.gz` no estuvieran, el script los descarga automáticamente desde un
-mirror en GitHub.)
+---
 
-## Entrenar
+## Uso y Entrenamiento
+
+Una vez compilado el código y descargados los datos, puedes comenzar a entrenar el modelo ejecutando:
 
 ```bash
-./vit_train_cuda \
-  --train-images data_unzipped/train-images-idx3-ubyte \
-  --train-labels data_unzipped/train-labels-idx1-ubyte \
-  --test-images data_unzipped/t10k-images-idx3-ubyte \
-  --test-labels data_unzipped/t10k-labels-idx1-ubyte \
-  --epochs 10 --batch-size 64 --lr 0.0005 \
-  --model-out models/vit_mnist.bin \
-  --metrics-out metrics/metrics.csv
+./build/vit_train.exe --train-images data/train-images-idx3-ubyte --train-labels data/train-labels-idx1-ubyte --test-images data/t10k-images-idx3-ubyte --test-labels data/t10k-labels-idx1-ubyte --epochs 10
 ```
 
-Todos los argumentos son opcionales (ver valores por defecto en
-`src/train.cpp`). Algunos útiles:
+Durante el entrenamiento, el programa informará del progreso en cada época (pérdida y precisión) y guardará los pesos del modelo (`.bin`) de manera automática si se presenta una mejora.
 
-- `--limit-train N` / `--limit-test N`: usar solo N imágenes (para pruebas rápidas).
-- `--seed N`: semilla para reproducibilidad.
-
-Cada época imprime `train_loss`, `train_acc`, `test_loss`, `test_acc` y el
-tiempo, y los añade a `metrics/metrics.csv`. El checkpoint se guarda cada vez
-que mejora la accuracy de test.
-
-### ⚠️ Sobre el rendimiento
-
-Este era un ViT educativo en CPU, pero gracias al **Soporte CUDA**, su rendimiento 
-ha cambiado completamente. Mediante el uso de Kernels nativos y un *Caching Allocator*
-al estilo de PyTorch, ahora una época sobre las 60,000 imágenes completas toma 
-apenas un par de minutos en GPU, lo cual lo hace práctico para experimentar y optimizar hiperparámetros.
-
-## Evaluar / inferencia
+Para evaluar un modelo previamente entrenado, puedes utilizar el programa de evaluación:
 
 ```bash
-./vit_eval_cuda --model models/vit_mnist.bin \
-  --test-images data_unzipped/t10k-images-idx3-ubyte \
-  --test-labels data_unzipped/t10k-labels-idx1-ubyte
+./build/vit_eval.exe --model models/vit_mnist.bin --test-images data/t10k-images-idx3-ubyte --test-labels data/t10k-labels-idx1-ubyte
 ```
 
-Imprime accuracy global y una matriz de confusión 10x10.
+---
 
-## Formato de los pesos guardados
+## Resultados y Análisis
 
-`VisionTransformer::save()/load()` (en `vit.hpp`) serializan en binario: un
-magic number, la configuración (`ViTConfig`) y luego cada tensor de
-parámetros como `(rows, cols, datos float)` en el mismo orden en que
-`parameters()` los recorre. `load()` valida que la configuración y las
-formas coincidan antes de sobrescribir los datos.
+A continuación, se presentan los resultados obtenidos tras entrenar el modelo en el dataset MNIST completo (60,000 imágenes) durante 10 épocas, utilizando el optimizador AdamW (tasa de aprendizaje ajustada y $\lambda=0.01$):
 
-## Validación realizada
+| Época | Pérdida (Train) | Precisión (Train) | Pérdida (Test) | Precisión (Test) | Tiempo (s) |
+|:---:|:---:|:---:|:---:|:---:|:---:|
+| 1 | 0.41297 | 87.25% | 0.18127 | 94.63% | 907.25 |
+| 2 | 0.14804 | 95.55% | 0.12477 | 96.23% | 903.93 |
+| 3 | 0.10344 | 96.88% | 0.11616 | 96.58% | 863.49 |
+| 4 | 0.07819 | 97.62% | 0.10024 | 96.88% | 872.27 |
+| 5 | 0.06084 | 98.08% | 0.10441 | 96.70% | 810.01 |
+| 6 | 0.05127 | 98.39% | 0.08956 | 97.30% | 792.08 |
+| 7 | 0.04106 | 98.70% | 0.09187 | 97.47% | 805.22 |
+| 8 | 0.03573 | 98.84% | 0.09313 | 97.30% | 800.04 |
+| 9 | 0.03132 | 98.96% | 0.08784 | **97.64%** | 801.10 |
+| 10 | 0.02594 | 99.16% | 0.10536 | 97.08% | 794.68 |
 
-Se reescribió parte fundamental de las operaciones tensoriales en CUDA.
-Con solo **10,000 imágenes** de entrenamiento y **5 épocas**, los resultados con 
-aceleración GPU son:
-
-| Época | train_loss | train_acc | test_loss | test_acc |
-|------:|-----------:|----------:|----------:|---------:|
-| 1     | 0.944      | 69.3%     | 0.522     | 82.6%    |
-| 2     | 0.351      | 89.7%     | 0.379     | 87.6%    |
-| 3     | 0.236      | 92.7%     | 0.331     | 88.9%    |
-| 4     | 0.156      | 95.3%     | 0.333     | 88.8%    |
-| 5     | 0.133      | 95.5%     | 0.258     | 92.4%    |
-
-La pérdida baja consistentemente y la accuracy sube en cada época, lo que
-confirma que el forward pass, el backward pass y el optimizador Adam están
-implementados correctamente. Con el dataset completo (60k imágenes) y más
-épocas, la accuracy en test debería subir bastante más (un ViT pequeño bien
-entrenado en MNIST suele superar 97-98%).
-
-También se verificó explícitamente que guardar y volver a cargar los pesos
-reproduce exactamente la misma accuracy.
-
-## Ideas para extender
-
-- **Data augmentation**: pequeñas rotaciones/traslaciones para mejorar generalización.
-- **Dropout**: añadir una capa de dropout en la MLP o en la atención.
-- **Warmup + decaimiento de learning rate**: común en el entrenamiento de Transformers.
-- **Batch real vectorizado**: extender `Tensor` a 3D (batch, seq, dim) para
-  aprovechar mejor la CPU (bastante más trabajo de ingeniería).
-- **Cuantización de pesos** para inferencia más rápida/liviana.
+**Análisis de los Resultados:**
+1. **Convergencia Exitosa:** El modelo aprende de manera fluida y estable. La pérdida de entrenamiento (train loss) baja constantemente desde 0.41 hasta casi 0.02, lo que demuestra que nuestra implementación manual del **Grafo Computacional y Backpropagation** es matemáticamente correcta.
+2. **Excelente Precisión:** Alcanzar un **97.64%** de precisión en el conjunto de pruebas (test) en la época 9 es un resultado sumamente destacable para una red escrita enteramente desde cero en C++.
+3. **Comportamiento Esperado (Overfitting):** Hacia la época 10, podemos observar cómo la pérdida en las pruebas (test loss) sufre un ligero repunte (de 0.087 a 0.105), mientras que la precisión de entrenamiento sigue subiendo. Este es el comportamiento clásico de un ligero sobreajuste (overfitting), demostrando que la red tiene capacidad suficiente para memorizar el dataset y nos indica que la época 9 es el punto óptimo para detener el entrenamiento.

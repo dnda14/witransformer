@@ -60,6 +60,7 @@ struct CachingAllocator {
 struct TensorImpl;
 using Tensor = std::shared_ptr<TensorImpl>;
 
+// Representa un Tensor. Guarda los números, sus gradientes y la info para calcular derivadas.
 struct TensorImpl : std::enable_shared_from_this<TensorImpl> {
     int rows = 0, cols = 0;
     std::vector<float> data;   // tamaño rows*cols, almacenamiento row-major
@@ -140,6 +141,7 @@ struct TensorImpl : std::enable_shared_from_this<TensorImpl> {
 
 // ---------- Construcción básica ----------
 
+// Crea un tensor vacío (lleno de ceros).
 inline Tensor make_tensor(int rows, int cols, bool requires_grad = false) {
     auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
 #ifdef USE_CUDA
@@ -148,6 +150,7 @@ inline Tensor make_tensor(int rows, int cols, bool requires_grad = false) {
     return t;
 }
 
+// Crea un tensor usando datos de un vector de C++.
 inline Tensor from_vector(int rows, int cols, const std::vector<float>& values,
                            bool requires_grad = false) {
     auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
@@ -160,7 +163,7 @@ inline Tensor from_vector(int rows, int cols, const std::vector<float>& values,
     return t;
 }
 
-// Inicialización Xavier/Glorot uniforme, estándar para capas lineales.
+// Crea un tensor con valores aleatorios (útil para iniciar los pesos de la red).
 inline Tensor random_tensor(int rows, int cols, bool requires_grad, std::mt19937& rng) {
     auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
     float limit = std::sqrt(6.0f / static_cast<float>(rows + cols));
@@ -172,6 +175,7 @@ inline Tensor random_tensor(int rows, int cols, bool requires_grad, std::mt19937
     return t;
 }
 
+// Crea un tensor lleno de ceros.
 inline Tensor zeros(int rows, int cols, bool requires_grad = false) {
     auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
 #ifdef USE_CUDA
@@ -190,7 +194,7 @@ inline void build_topo(const Tensor& t, std::vector<Tensor>& order,
     order.push_back(t);
 }
 
-// Llamar solo sobre un tensor escalar (1x1), típicamente la pérdida.
+// Calcula los gradientes (derivadas) yendo de atrás hacia adelante en la red.
 inline void backward(const Tensor& loss) {
     if (loss->rows != 1 || loss->cols != 1)
         throw std::runtime_error("backward() debe llamarse sobre un escalar 1x1");
