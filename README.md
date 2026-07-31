@@ -24,6 +24,26 @@ La arquitectura sigue este flujo de procesamiento:
    - **Normalización (LayerNorm) y Conexiones Residuales:** Aseguran que el entrenamiento sea estable.
 5. **Clasificación:** Al final, se extrae la información consolidada en un token especial (llamado `[CLS]`) y se pasa por una última capa lineal para decidir a qué dígito (del 0 al 9) corresponde la imagen.
 
+### Principales Operaciones Matemáticas
+
+Para mantener el espíritu didáctico del proyecto, aquí presentamos las 3 fórmulas matemáticas más críticas que se han programado desde cero en el código:
+
+**1. Mecanismo de Atención (Self-Attention)**
+El núcleo del Transformer. Calcula qué parches de la imagen deben "prestarse atención" mutuamente cruzando Queries ($Q$), Keys ($K$) y Values ($V$):
+$$ \text{Atención}(Q, K, V) = \text{softmax}\left(\frac{Q K^\top}{\sqrt{d_k}}\right) V $$
+
+**2. Función de Pérdida (Cross-Entropy)**
+Mide qué tan equivocada estuvo la predicción del modelo ($y$ es la etiqueta correcta):
+$$ \mathcal{L} = -\log(\text{probs}_y) $$
+
+**3. Autograd Manual (Backpropagation)**
+Para que la red aprenda, se calcularon las derivadas a mano en `ops.hpp`. Por ejemplo, para propagar el error $\bar{Y}$ a través de una multiplicación de matrices $Y = XW$:
+$$ \bar{W} = X^\top \bar{Y} \quad \text{y} \quad \bar{X} = \bar{Y} W^\top $$
+
+**4. Optimizador AdamW**
+Mientras el Autograd (Backpropagation) calcula *hacia dónde* ajustar los pesos, Adam decide matemáticamente *cuánto* ajustarlos. Utiliza un promedio de gradientes pasados (Momentum) para tomar impulso, y frena los cambios demasiado bruscos observando la varianza. La actualización de un parámetro $\theta$ se calcula como:
+$$ \theta_t = \theta_{t-1} - \eta \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon} - \eta \lambda_{\text{wd}} \theta_{t-1} $$
+
 ---
 
 ## Estructura del Código
