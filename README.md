@@ -44,9 +44,7 @@ El código fuente está modularizado de forma lógica para separar las matemáti
 
 Para compilar el proyecto, necesitas un compilador compatible con C++17 (como `g++`, `clang++` o MSVC). 
 
-Existen dos formas de compilar el proyecto:
-
-### Opción A: Usando CMake (Estándar)
+### Usando CMake (Estándar)
 Si tienes CMake instalado, es la manera más robusta:
 ```bash
 mkdir build
