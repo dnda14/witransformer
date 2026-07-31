@@ -24,6 +24,8 @@ La arquitectura sigue este flujo de procesamiento:
    - **Normalización (LayerNorm) y Conexiones Residuales:** Aseguran que el entrenamiento sea estable.
 5. **Clasificación:** Al final, se extrae la información consolidada en un token especial (llamado `[CLS]`) y se pasa por una última capa lineal para decidir a qué dígito (del 0 al 9) corresponde la imagen.
 
+---
+
 ### Principales Operaciones Matemáticas
 
 En esta sección presentamos las fórmulas matemáticas más críticas que se han programado en el código:
