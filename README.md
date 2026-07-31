@@ -1,6 +1,8 @@
 # Vision Transformer (ViT) en C++ — Clasificación de MNIST
 
-Este repositorio contiene una implementación de un **Vision Transformer (ViT)** desarrollada desde cero en **C++17** (con soporte opcional para aceleración por GPU mediante **CUDA**). 
+**Autores:** Arleen Ferro, Cristhian Huanca, Wilson Mamani
+
+Este repositorio contiene una implementación de un **Vision Transformer (ViT)** desarrollada en **C++17** (con soporte opcional para aceleración por GPU mediante **CUDA**). 
 
 El proyecto fue diseñado sin dependencias de librerías externas de Machine Learning (como PyTorch o TensorFlow). Su propósito principal es ilustrar cómo operan internamente los motores de cálculo tensorial, la diferenciación automática (Backpropagation) y la arquitectura Transformer.
 
@@ -11,43 +13,8 @@ El proyecto fue diseñado sin dependencias de librerías externas de Machine Lea
 A diferencia de las Redes Neuronales Convolucionales (CNN) clásicas, que procesan imágenes píxel por píxel buscando patrones locales, el Vision Transformer trata a la imagen de manera similar a como un modelo de lenguaje procesa texto.
 
 La arquitectura sigue este flujo de procesamiento:
+![Gráfico del ViT](vit_pipeline.png)
 
-```mermaid
-graph TD
-    %% Estilos
-    classDef input fill:#f9f6f7,stroke:#333,stroke-width:2px;
-    classDef embed fill:#e6f7ff,stroke:#1890ff,stroke-width:2px;
-    classDef trans fill:#f6ffed,stroke:#52c41a,stroke-width:2px;
-    classDef out fill:#fff1f0,stroke:#f5222d,stroke-width:2px;
-
-    A["Imagen MNIST 28x28"]:::input -->|Dividir| B["16 Parches de 7x7"]:::input
-    B -->|Aplanar| C["Vectores de 49 dim"]:::input
-    C -->|Proyección| D["Embeddings de 64 dim"]:::embed
-    
-    D --> E{"Añadir Token [CLS]<br>+ Positional Embeddings"}:::embed
-    
-    E --> F["Bloque Transformer 1"]:::trans
-    F --> G["Bloque Transformer 2"]:::trans
-    G --> H["Bloque Transformer 3"]:::trans
-    H --> I["Bloque Transformer 4"]:::trans
-    
-    subgraph Interior de cada Bloque
-    direction TB
-    T_In["Entrada"] --> LN1["LayerNorm"]
-    LN1 --> MHA["Multi-Head Attention"]
-    MHA --> ADD1(("+ Residual"))
-    T_In ---> ADD1
-    ADD1 --> LN2["LayerNorm"]
-    LN2 --> MLP["MLP"]
-    MLP --> ADD2(("+ Residual"))
-    ADD1 ---> ADD2
-    ADD2 --> T_Out["Salida"]
-    end
-    
-    I -->|Extraer| J["Token CLS Final"]:::out
-    J --> K["Capa Lineal Clasificadora"]:::out
-    K --> L(("Dígito 0-9")):::out
-```
 1. **División en Parches (Patchify):** La imagen de entrada (28x28 píxeles en el caso de MNIST) se divide en cuadrículas pequeñas, por ejemplo, parches de 7x7.
 2. **Proyección Lineal (Embedding):** Cada parche se aplana y se pasa por una capa lineal para convertirlo en un vector numérico representativo (embedding).
 3. **Información Posicional:** Como el modelo no procesa los parches en un orden espacial estricto, se le suma una "etiqueta posicional" a cada vector para que la red sepa en qué lugar de la imagen original iba ese parche.
