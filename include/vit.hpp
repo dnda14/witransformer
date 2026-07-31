@@ -65,21 +65,24 @@ struct ViTConfig {
  * @param cfg   Configuración del ViT (para obtener patch_size y num_patches).
  * @return      Tensor con forma (num_patches, patch_dim) — ejemplo: (16, 49).
  */
-inline Tensor patchify(const std::vector<float>& image, const ViTConfig& cfg) {
+inline Tensor patchify(const std::vector<float>& images, int batch_size, const ViTConfig& cfg) {
     int side = cfg.image_size / cfg.patch_size;
-    auto out = make_tensor(cfg.num_patches(), cfg.patch_dim(), false);
-    int patch_idx = 0;
-    for (int py = 0; py < side; ++py) {
-        for (int px = 0; px < side; ++px) {
-            int col = 0;
-            for (int iy = 0; iy < cfg.patch_size; ++iy) {
-                for (int ix = 0; ix < cfg.patch_size; ++ix) {
-                    int y = py * cfg.patch_size + iy;
-                    int x = px * cfg.patch_size + ix;
-                    out->at(patch_idx, col++) = image[y * cfg.image_size + x];
+    auto out = make_tensor(batch_size, cfg.num_patches(), cfg.patch_dim(), false);
+    for (int b = 0; b < batch_size; ++b) {
+        int patch_idx = 0;
+        int img_offset = b * (cfg.image_size * cfg.image_size);
+        for (int py = 0; py < side; ++py) {
+            for (int px = 0; px < side; ++px) {
+                int col = 0;
+                for (int iy = 0; iy < cfg.patch_size; ++iy) {
+                    for (int ix = 0; ix < cfg.patch_size; ++ix) {
+                        int y = py * cfg.patch_size + iy;
+                        int x = px * cfg.patch_size + ix;
+                        out->at(b, patch_idx, col++) = images[img_offset + y * cfg.image_size + x];
+                    }
                 }
+                ++patch_idx;
             }
-            ++patch_idx;
         }
     }
 #ifdef USE_CUDA
@@ -135,15 +138,15 @@ struct VisionTransformer : Module {
      * @param image Vector de 784 floats normalizados en [0, 1].
      * @return      Tensor de logits con forma (1, num_classes).
      */
-    Tensor forward(const std::vector<float>& image) {
-        Tensor patches = patchify(image, cfg);              // (num_patches, patch_dim)
-        Tensor embedded = patch_embed.forward(patches);      // (num_patches, embed_dim)
-        Tensor with_cls = concat_rows_helper(cls_token, embedded); // (num_patches+1, embed_dim)
+    Tensor forward(const std::vector<float>& images, int batch_size) {
+        Tensor patches = patchify(images, batch_size, cfg);              // (batch_size, num_patches, patch_dim)
+        Tensor embedded = patch_embed.forward(patches);      // (batch_size, num_patches, embed_dim)
+        Tensor with_cls = concat_rows_helper(cls_token, embedded); // (batch_size, num_patches+1, embed_dim)
         Tensor x = add(with_cls, pos_embed);
         for (auto& blk : blocks) x = blk->forward(x);
         x = final_ln.forward(x);
-        Tensor cls_out = select_row(x, 0);                   // (1, embed_dim)
-        Tensor logits = head.forward(cls_out);                // (1, num_classes)
+        Tensor cls_out = select_row(x, 0);                   // (batch_size, 1, embed_dim)
+        Tensor logits = head.forward(cls_out);                // (batch_size, 1, num_classes)
         return logits;
     }
 
@@ -158,32 +161,38 @@ struct VisionTransformer : Module {
      * @return     Tensor concatenado con forma (n+1, d).
      */
     static Tensor concat_rows_helper(const Tensor& cls, const Tensor& rest) {
+        int batch = rest->batch;
         int d = cls->cols;
-        auto out = make_tensor(rest->rows + 1, d, cls->requires_grad || rest->requires_grad);
+        auto out = make_tensor(batch, rest->rows + 1, d, cls->requires_grad || rest->requires_grad);
 #ifdef USE_CUDA
-        cuda::concat_rows_copy(cls->d_data, out->d_data, 1, d, 0);
-        cuda::concat_rows_copy(rest->d_data, out->d_data, rest->rows, d, 1);
+        cuda::concat_rows_copy(cls->d_data, out->d_data, batch, 1, d, 0, rest->rows + 1, false);
+        cuda::concat_rows_copy(rest->d_data, out->d_data, batch, rest->rows, d, 1, rest->rows + 1, true);
 #else
-        for (int j = 0; j < d; ++j) out->at(0, j) = cls->at(0, j);
-        for (int i = 0; i < rest->rows; ++i)
-            for (int j = 0; j < d; ++j)
-                out->at(i + 1, j) = rest->at(i, j);
+        for (int b = 0; b < batch; ++b) {
+            for (int j = 0; j < d; ++j) out->at(b, 0, j) = cls->at(0, 0, j);
+            for (int i = 0; i < rest->rows; ++i)
+                for (int j = 0; j < d; ++j)
+                    out->at(b, i + 1, j) = rest->at(b, i, j);
+        }
 #endif
         out->parents = {cls, rest};
         TensorImpl* out_raw = out.get();
-        out->backward_fn = [cls, rest, out_raw, d]() {
+        out->backward_fn = [cls, rest, out_raw, batch, d]() {
 #ifdef USE_CUDA
             if (cls->requires_grad)
-                cuda::concat_rows_bwd_part(out_raw->d_grad, cls->d_grad, 1, d, 0);
+                cuda::concat_rows_bwd_part(out_raw->d_grad, cls->d_grad, batch, 1, d, 0, rest->rows + 1, false);
             if (rest->requires_grad)
-                cuda::concat_rows_bwd_part(out_raw->d_grad, rest->d_grad, rest->rows, d, 1);
+                cuda::concat_rows_bwd_part(out_raw->d_grad, rest->d_grad, batch, rest->rows, d, 1, rest->rows + 1, true);
 #else
             if (cls->requires_grad)
-                for (int j = 0; j < d; ++j) cls->g(0, j) += out_raw->g(0, j);
+                for (int b = 0; b < batch; ++b)
+                    for (int j = 0; j < d; ++j) 
+                        cls->g(0, 0, j) += out_raw->g(b, 0, j);
             if (rest->requires_grad)
-                for (int i = 0; i < rest->rows; ++i)
-                    for (int j = 0; j < d; ++j)
-                        rest->g(i, j) += out_raw->g(i + 1, j);
+                for (int b = 0; b < batch; ++b)
+                    for (int i = 0; i < rest->rows; ++i)
+                        for (int j = 0; j < d; ++j)
+                            rest->g(b, i, j) += out_raw->g(b, i + 1, j);
 #endif
         };
         return out;

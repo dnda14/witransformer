@@ -3,6 +3,7 @@ project(vit_mnist_cpp LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
@@ -28,16 +29,25 @@ if(CMAKE_CUDA_COMPILER AND NOT USE_CPU_ONLY)
     target_compile_definitions(vit_cuda PUBLIC USE_CUDA)
     set_target_properties(vit_cuda PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
+    add_executable(vit_train_cuda src/train.cpp)
+    add_executable(vit_eval_cuda  src/eval.cpp)
+    
+    target_link_libraries(vit_train_cuda PUBLIC vit_cuda CUDA::cudart)
+    target_link_libraries(vit_eval_cuda  PUBLIC vit_cuda CUDA::cudart)
+    
+    target_compile_definitions(vit_train_cuda PUBLIC USE_CUDA)
+    target_compile_definitions(vit_eval_cuda  PUBLIC USE_CUDA)
+
+    # También compilamos la versión de solo CPU en paralelo
     add_executable(vit_train src/train.cpp)
     add_executable(vit_eval  src/eval.cpp)
-    
-    target_link_libraries(vit_train PUBLIC vit_cuda CUDA::cudart)
-    target_link_libraries(vit_eval  PUBLIC vit_cuda CUDA::cudart)
-    
-    target_compile_definitions(vit_train PUBLIC USE_CUDA)
-    target_compile_definitions(vit_eval  PUBLIC USE_CUDA)
+    find_package(OpenMP)
+    if(OpenMP_CXX_FOUND)
+        target_link_libraries(vit_train PUBLIC OpenMP::OpenMP_CXX)
+        target_link_libraries(vit_eval  PUBLIC OpenMP::OpenMP_CXX)
+    endif()
 
-    message(STATUS "CUDA encontrado: se compilará con aceleración GPU (USE_CUDA=1)")
+    message(STATUS "CUDA encontrado: se compilarán AMBAS versiones (vit_train_cuda y vit_train)")
 else()
     add_executable(vit_train src/train.cpp)
     add_executable(vit_eval  src/eval.cpp)

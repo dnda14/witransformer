@@ -64,15 +64,29 @@ int main(int argc, char** argv) {
     // --- Inferencia y evaluación ---
     std::vector<std::vector<int>> confusion(10, std::vector<int>(10, 0));
     int correct = 0;
-    for (size_t i = 0; i < test.size(); ++i) {
-        Tensor logits = model.forward(test.images[i]);
+    int batch_size = 32; // Default batch size for evaluation
+    for (size_t start = 0; start < test.size(); start += batch_size) {
+        size_t end = std::min(start + batch_size, test.size());
+        int bs = end - start;
+        std::vector<float> batch_images;
+        batch_images.reserve(bs * 784);
+        std::vector<int> batch_labels;
+        batch_labels.reserve(bs);
+        for (size_t bi = start; bi < end; ++bi) {
+            batch_images.insert(batch_images.end(), test.images[bi].begin(), test.images[bi].end());
+            batch_labels.push_back(test.labels[bi]);
+        }
+        
+        Tensor logits = model.forward(batch_images, bs);
 #ifdef USE_CUDA
         logits->to_host(); // traer logits de GPU a CPU para calcular argmax
 #endif
-        int pred = static_cast<int>(std::max_element(logits->data.begin(), logits->data.end()) - logits->data.begin());
-        int truth = test.labels[i];
-        confusion[truth][pred]++;
-        if (pred == truth) ++correct;
+        for (int b = 0; b < bs; ++b) {
+            int pred = static_cast<int>(std::max_element(logits->data.begin() + b * 10, logits->data.begin() + (b + 1) * 10) - (logits->data.begin() + b * 10));
+            int truth = batch_labels[b];
+            confusion[truth][pred]++;
+            if (pred == truth) ++correct;
+        }
     }
 
     // --- Resultados ---

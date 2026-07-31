@@ -25,3 +25,5 @@ test_grads_*
 *.deb
 
 test_grads.cpp
+
+REFACTOR_*

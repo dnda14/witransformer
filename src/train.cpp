@@ -93,8 +93,8 @@ static Args parse_args(int argc, char** argv) {
  * @param v Vector de probabilidades o logits.
  * @return Índice del elemento con mayor valor.
  */
-static int argmax(const std::vector<float>& v) {
-    return static_cast<int>(std::max_element(v.begin(), v.end()) - v.begin());
+static int argmax(const float* v, int size) {
+    return static_cast<int>(std::max_element(v, v + size) - v);
 }
 
 /**
@@ -165,18 +165,28 @@ int main(int argc, char** argv) {
             int end = std::min(start + args.batch_size, n);
             int bs = end - start;
             opt.zero_grad();
-            // Acumular gradientes del mini-batch
+            std::vector<float> batch_images;
+            batch_images.reserve(bs * 784);
+            std::vector<int> batch_labels;
+            batch_labels.reserve(bs);
             for (int bi = start; bi < end; ++bi) {
                 int idx = indices[bi];
-                Tensor logits = model.forward(train.images[idx]);
-                std::vector<float> probs;
-                Tensor loss = softmax_cross_entropy(logits, train.labels[idx], &probs);
-                backward(loss);
-                running_loss += loss->data[0];
-                if (argmax(probs) == train.labels[idx]) ++correct;
+                batch_images.insert(batch_images.end(), train.images[idx].begin(), train.images[idx].end());
+                batch_labels.push_back(train.labels[idx]);
             }
-            // Actualizar pesos (grad_scale = 1/batch_size para promediar gradientes)
-            opt.step(1.0f / static_cast<float>(bs));
+
+            Tensor logits = model.forward(batch_images, bs);
+            std::vector<float> probs;
+            Tensor loss = softmax_cross_entropy(logits, batch_labels, &probs);
+            backward(loss);
+            running_loss += loss->data[0] * bs;
+            
+            for (int b = 0; b < bs; ++b) {
+                if (argmax(probs.data() + b * 10, 10) == batch_labels[b]) ++correct;
+            }
+
+            // Actualizar pesos (ya promediados en cross_entropy)
+            opt.step(1.0f);
 
             // Progreso
             int done = end;
@@ -193,12 +203,27 @@ int main(int argc, char** argv) {
         // --- Evaluación en test ---
         double test_running_loss = 0.0;
         int test_correct = 0;
-        for (size_t i = 0; i < test.size(); ++i) {
-            Tensor logits = model.forward(test.images[i]);
+        int test_n = static_cast<int>(test.size());
+        for (int start = 0; start < test_n; start += args.batch_size) {
+            int end = std::min(start + args.batch_size, test_n);
+            int bs = end - start;
+            std::vector<float> batch_images;
+            batch_images.reserve(bs * 784);
+            std::vector<int> batch_labels;
+            batch_labels.reserve(bs);
+            for (int bi = start; bi < end; ++bi) {
+                batch_images.insert(batch_images.end(), test.images[bi].begin(), test.images[bi].end());
+                batch_labels.push_back(test.labels[bi]);
+            }
+            
+            Tensor logits = model.forward(batch_images, bs);
             std::vector<float> probs;
-            Tensor loss = softmax_cross_entropy(logits, test.labels[i], &probs);
-            test_running_loss += loss->data[0];
-            if (argmax(probs) == test.labels[i]) ++test_correct;
+            Tensor loss = softmax_cross_entropy(logits, batch_labels, &probs);
+            test_running_loss += loss->data[0] * bs;
+            
+            for (int b = 0; b < bs; ++b) {
+                if (argmax(probs.data() + b * 10, 10) == batch_labels[b]) ++test_correct;
+            }
         }
         double test_loss = test_running_loss / test.size();
         double test_acc = static_cast<double>(test_correct) / test.size();

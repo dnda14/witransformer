@@ -90,9 +90,10 @@ using Tensor = std::shared_ptr<TensorImpl>;
  * Hereda de `enable_shared_from_this` para poder obtener un shared_ptr a sí mismo.
  */
 struct TensorImpl : std::enable_shared_from_this<TensorImpl> {
+    int batch = 1;             ///< Tamaño del batch (por defecto 1 para compatibilidad).
     int rows = 0;              ///< Número de filas de la matriz.
     int cols = 0;              ///< Número de columnas de la matriz.
-    std::vector<float> data;   ///< Datos de la matriz, tamaño rows×cols, almacenamiento row-major.
+    std::vector<float> data;   ///< Datos de la matriz, tamaño batch×rows×cols, almacenamiento row-major.
     std::vector<float> grad;   ///< Gradientes acumulados, mismo tamaño que data.
     bool requires_grad = false; ///< Si es true, este tensor participa en backpropagation.
 
@@ -166,28 +167,38 @@ struct TensorImpl : std::enable_shared_from_this<TensorImpl> {
 #endif
 
     /**
-     * @brief Construye un tensor de dimensiones r × c, inicializado a ceros.
+     * @brief Construye un tensor de dimensiones b × r × c, inicializado a ceros.
+     * @param b  Tamaño del batch.
      * @param r  Número de filas.
      * @param c  Número de columnas.
      * @param rg Si es true, el tensor participará en backpropagation.
      */
-    TensorImpl(int r, int c, bool rg = false)
-        : rows(r), cols(c), data(static_cast<size_t>(r) * c, 0.0f),
-          grad(static_cast<size_t>(r) * c, 0.0f), requires_grad(rg) {}
+    TensorImpl(int b, int r, int c, bool rg = false)
+        : batch(b), rows(r), cols(c), data(static_cast<size_t>(b) * r * c, 0.0f),
+          grad(static_cast<size_t>(b) * r * c, 0.0f), requires_grad(rg) {}
 
 #ifdef USE_CUDA
     /** @brief Destructor: devuelve los buffers de GPU al pool. */
     ~TensorImpl() { free_device(); }
 #endif
 
-    /** @brief Acceso mutable al elemento en la fila r, columna c. */
+    /** @brief Acceso mutable al elemento en la fila r, columna c (para batch=1). */
     inline float& at(int r, int c) { return data[static_cast<size_t>(r) * cols + c]; }
 
-    /** @brief Acceso de solo lectura al elemento en la fila r, columna c. */
+    /** @brief Acceso de solo lectura al elemento en la fila r, columna c (para batch=1). */
     inline float at(int r, int c) const { return data[static_cast<size_t>(r) * cols + c]; }
 
-    /** @brief Acceso mutable al gradiente en la fila r, columna c. */
+    /** @brief Acceso mutable al gradiente en la fila r, columna c (para batch=1). */
     inline float& g(int r, int c) { return grad[static_cast<size_t>(r) * cols + c]; }
+
+    /** @brief Acceso mutable al elemento en (b, r, c). */
+    inline float& at(int b, int r, int c) { return data[(static_cast<size_t>(b) * rows + r) * cols + c]; }
+
+    /** @brief Acceso de solo lectura al elemento en (b, r, c). */
+    inline float at(int b, int r, int c) const { return data[(static_cast<size_t>(b) * rows + r) * cols + c]; }
+
+    /** @brief Acceso mutable al gradiente en (b, r, c). */
+    inline float& g(int b, int r, int c) { return grad[(static_cast<size_t>(b) * rows + r) * cols + c]; }
 
     /**
      * @brief Pone a cero todos los gradientes (CPU y GPU si aplica).
@@ -206,14 +217,10 @@ struct TensorImpl : std::enable_shared_from_this<TensorImpl> {
 // ======================= Construcción de Tensores =======================
 
 /**
- * @brief Crea un tensor vacío (lleno de ceros).
- * @param rows          Número de filas.
- * @param cols          Número de columnas.
- * @param requires_grad Si es true, el tensor participará en backpropagation.
- * @return Tensor de dimensiones (rows, cols) inicializado a cero.
- */
-inline Tensor make_tensor(int rows, int cols, bool requires_grad = false) {
-    auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
+     * @brief Crea un tensor vacío (lleno de ceros) en 3D.
+     */
+inline Tensor make_tensor(int batch, int rows, int cols, bool requires_grad = false) {
+    auto t = std::make_shared<TensorImpl>(batch, rows, cols, requires_grad);
 #ifdef USE_CUDA
     t->alloc_device();
 #endif
@@ -221,19 +228,20 @@ inline Tensor make_tensor(int rows, int cols, bool requires_grad = false) {
 }
 
 /**
- * @brief Crea un tensor a partir de un vector de datos existente.
- * @param rows          Número de filas.
- * @param cols          Número de columnas.
- * @param values        Vector con los datos (debe tener exactamente rows×cols elementos).
- * @param requires_grad Si es true, el tensor participará en backpropagation.
- * @return Tensor con los datos copiados del vector.
- * @throws std::runtime_error Si values.size() != rows×cols.
+ * @brief Sobrecarga para crear un tensor 2D (batch = 1).
  */
-inline Tensor from_vector(int rows, int cols, const std::vector<float>& values,
+inline Tensor make_tensor(int rows, int cols, bool requires_grad = false) {
+    return make_tensor(1, rows, cols, requires_grad);
+}
+
+/**
+ * @brief Crea un tensor 3D a partir de un vector.
+ */
+inline Tensor from_vector(int batch, int rows, int cols, const std::vector<float>& values,
                            bool requires_grad = false) {
-    auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
+    auto t = std::make_shared<TensorImpl>(batch, rows, cols, requires_grad);
     if (values.size() != t->data.size())
-        throw std::runtime_error("from_vector: tamaño no coincide con rows*cols");
+        throw std::runtime_error("from_vector: tamaño no coincide con batch*rows*cols");
     t->data = values;
 #ifdef USE_CUDA
     t->to_device();
@@ -242,20 +250,18 @@ inline Tensor from_vector(int rows, int cols, const std::vector<float>& values,
 }
 
 /**
- * @brief Crea un tensor con valores aleatorios usando inicialización Xavier/Glorot uniforme.
- *
- * Los valores se muestrean uniformemente en [-limit, +limit] donde
- * limit = √(6 / (rows + cols)). Esta inicialización es estándar para capas
- * lineales y ayuda a que los gradientes no exploten ni se desvanezcan.
- *
- * @param rows          Número de filas.
- * @param cols          Número de columnas.
- * @param requires_grad Si es true, el tensor participará en backpropagation.
- * @param rng           Generador de números aleatorios (Mersenne Twister).
- * @return Tensor con valores aleatorios Xavier/Glorot.
+ * @brief Sobrecarga para crear un tensor 2D desde vector (batch = 1).
  */
-inline Tensor random_tensor(int rows, int cols, bool requires_grad, std::mt19937& rng) {
-    auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
+inline Tensor from_vector(int rows, int cols, const std::vector<float>& values,
+                           bool requires_grad = false) {
+    return from_vector(1, rows, cols, values, requires_grad);
+}
+
+/**
+ * @brief Crea un tensor aleatorio 3D.
+ */
+inline Tensor random_tensor(int batch, int rows, int cols, bool requires_grad, std::mt19937& rng) {
+    auto t = std::make_shared<TensorImpl>(batch, rows, cols, requires_grad);
     float limit = std::sqrt(6.0f / static_cast<float>(rows + cols));
     std::uniform_real_distribution<float> dist(-limit, limit);
     for (auto& v : t->data) v = dist(rng);
@@ -266,18 +272,24 @@ inline Tensor random_tensor(int rows, int cols, bool requires_grad, std::mt19937
 }
 
 /**
- * @brief Crea un tensor lleno de ceros (equivalente a make_tensor).
- * @param rows          Número de filas.
- * @param cols          Número de columnas.
- * @param requires_grad Si es true, el tensor participará en backpropagation.
- * @return Tensor de dimensiones (rows, cols) inicializado a cero.
+ * @brief Sobrecarga para tensor aleatorio 2D (batch = 1).
+ */
+inline Tensor random_tensor(int rows, int cols, bool requires_grad, std::mt19937& rng) {
+    return random_tensor(1, rows, cols, requires_grad, rng);
+}
+
+/**
+ * @brief Crea un tensor lleno de ceros 3D.
+ */
+inline Tensor zeros(int batch, int rows, int cols, bool requires_grad = false) {
+    return make_tensor(batch, rows, cols, requires_grad);
+}
+
+/**
+ * @brief Sobrecarga para tensor de ceros 2D (batch = 1).
  */
 inline Tensor zeros(int rows, int cols, bool requires_grad = false) {
-    auto t = std::make_shared<TensorImpl>(rows, cols, requires_grad);
-#ifdef USE_CUDA
-    t->alloc_device();
-#endif
-    return t;
+    return make_tensor(1, rows, cols, requires_grad);
 }
 
 // ======================= Backward (Backpropagation) =======================
@@ -316,8 +328,8 @@ inline void build_topo(const Tensor& t, std::vector<Tensor>& order,
  * @throws std::runtime_error Si loss no es un escalar 1×1.
  */
 inline void backward(const Tensor& loss) {
-    if (loss->rows != 1 || loss->cols != 1)
-        throw std::runtime_error("backward() debe llamarse sobre un escalar 1x1");
+    if (loss->batch != 1 || loss->rows != 1 || loss->cols != 1)
+        throw std::runtime_error("backward() debe llamarse sobre un escalar 1x1x1");
     std::vector<Tensor> order;
     std::vector<TensorImpl*> visited;
     build_topo(loss, order, visited);
