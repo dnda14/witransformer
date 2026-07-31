@@ -8,7 +8,7 @@ El proyecto fue diseñado sin dependencias de librerías externas de Machine Lea
 
 ---
 
-## Arquitectura del Modelo (Vision Transformer)
+## Arquitectura del Modelo
 
 A diferencia de las Redes Neuronales Convolucionales (CNN) clásicas, que procesan imágenes píxel por píxel buscando patrones locales, el Vision Transformer trata a la imagen de manera similar a como un modelo de lenguaje procesa texto.
 
